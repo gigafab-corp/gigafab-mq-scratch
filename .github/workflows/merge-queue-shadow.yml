@@ -18,6 +18,7 @@ jobs:
   queue:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       # SHADOW EVAL: local patched copy (one-line eligibility patch) because
       # upstream's APPROVED-only gate is unsatisfiable in a single-identity
       # repo (GitHub 422s self-approval). Upstream SHA reference kept in the
