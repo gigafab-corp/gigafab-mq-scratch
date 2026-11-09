@@ -1,0 +1,138 @@
+name: "Merge Queue (FIFO + Fastlane)"
+description: >-
+  A merge queue for GitHub Pull Requests implementing FIFO ordering with
+  automatic re-testing, hot‑fix fastlane, stale branch updating, optional queue
+  tracking via a dashboard issue, and optional sync to a GitHub Project (v2).
+  Designed to work on free tier accounts and private repositories without
+  requiring any paid GitHub features. This action serialises PR merges,
+  ensures each change is tested on top of the current base branch and
+  prevents bad commits from drifting into your protected branch. It can also
+  surface the queue in a project board or dashboard issue for your team.
+
+author: "igorjs <oss@mail.igorjs.io"
+
+branding:
+  color: "green"
+  icon: "git-merge"
+
+# Inputs controlling authentication and behaviour. See README for details.
+inputs:
+  token:
+    description: >-
+      GitHub token used for API calls. Defaults to the GITHUB_TOKEN provided
+      by the runner. You can provide a fine‑grained PAT when syncing to a
+      project owned by an organisation that your workflow token cannot access.
+    required: false
+  base_branch:
+    description: >-
+      The protected branch that PRs merge into (e.g. master or main). This
+      action will stage merges on top of this branch and merge tested PRs
+      back into this branch.
+    required: false
+    default: "master"
+  queue_branch:
+    description: >-
+      The branch used to stage normal queue merges. It will be force
+      updated each run and optionally deleted at the end.
+    required: false
+    default: "merge-queue/staging"
+  fastlane_branch:
+    description: >-
+      The branch used to stage fastlane (hotfix) merges. It will be force
+      updated each run and optionally deleted at the end.
+    required: false
+    default: "merge-queue/fastlane"
+  state_branch:
+    description: >-
+      Branch where the action persists its internal state, including the
+      FIFO queue file. This branch will be created automatically if it does
+      not exist.
+    required: false
+    default: "merge-queue/state"
+  queue_file:
+    description: >-
+      Path to the queue file (JSON) within the state branch. The file stores
+      an object of the form `{ "version": 1, "queue": [PR numbers] }`.
+    required: false
+    default: ".github/merge-queue-queue.json"
+  status_context:
+    description: >-
+      Name of the commit status created on each PR head. Add this context to
+      your branch protection settings.
+    required: false
+    default: "merge-queue"
+  mode:
+    description: >-
+      Operation mode: either `shadow` or `live`. In `shadow` mode the
+      action stages changes and reports status but never merges PRs. In
+      `live` mode the action merges successfully tested PRs.
+    required: false
+    default: "shadow"
+  fastlane_matchers:
+    description: >-
+      Comma separated list of case‑insensitive regular expressions used to
+      detect hotfix or critical PRs by branch name or title. When a PR
+      matches any pattern it bypasses the FIFO queue and is processed
+      immediately (fastlane). Patterns must be valid JavaScript RegExp
+      without surrounding slashes.
+    required: false
+    default: "^(hotfix|critical|security)/,\bhotfix\b,^hotfix:"
+  behind_max_commits:
+    description: >-
+      If a PR branch is behind the base branch by more than this many
+      commits the action will attempt to update the branch automatically
+      using the Update Branch API. Set to 0 to disable auto updating. PRs
+      from forks with edits disabled cannot be auto updated.
+    required: false
+    default: "100"
+  merge_method:
+    description: >-
+      Merge method used when merging the PR back into the base branch. Use
+      `merge` for a merge commit (ensuring the merged tree exactly matches
+      the staged test) or `squash` to squash commits if your repository
+      enforces a linear history.
+    required: false
+    default: "merge"
+  clean_queue:
+    description: >-
+      Whether to delete the queue/fastlane branch after each run. Set to
+      `false` if you wish to keep the branches for audit purposes.
+    required: false
+    default: "true"
+  # Queue dashboard configuration
+  enable_queue_tracking:
+    description: >-
+      When `true`, the action renders the current queue as a markdown
+      table in the job summary and upserts a dashboard issue. Requires
+      `issues: write` permission.
+    required: false
+    default: "true"
+  dashboard_title:
+    description: >-
+      Title used for the dashboard issue. If an open issue with this title
+      exists it will be updated; otherwise a new issue is created.
+    required: false
+    default: "Merge Queue Dashboard"
+  dashboard_label:
+    description: >-
+      Optional existing label to attach to the dashboard issue. The label
+      must exist in the repository; if it doesn’t the issue will be created
+      without labels.
+    required: false
+    default: "merge-queue-dashboard"
+  dashboard_pin:
+    description: >-
+      Whether to pin the dashboard issue when created or updated. Requires
+      `issues: write` permission.
+    required: false
+    default: "true"
+  dashboard_scan_open_issues:
+    description: >-
+      Maximum number of open issues to scan when locating an existing
+      dashboard issue. Increase if your repository has many open issues.
+    required: false
+    default: "100"
+
+runs:
+  using: "node24"
+  main: "dist/index.js"
