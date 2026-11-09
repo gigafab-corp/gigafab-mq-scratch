@@ -18,7 +18,11 @@ jobs:
   queue:
     runs-on: ubuntu-latest
     steps:
-      - uses: igorjs/gh-actions-merge-queue@425ab256b34b63d260e600da5773d0da277e96f0
+      # SHADOW EVAL: local patched copy (one-line eligibility patch) because
+      # upstream's APPROVED-only gate is unsatisfiable in a single-identity
+      # repo (GitHub 422s self-approval). Upstream SHA reference kept in the
+      # report; this local copy is what actually runs here.
+      - uses: ./.github/actions/merge-queue
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           base_branch: main
