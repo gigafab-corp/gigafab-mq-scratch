@@ -1,0 +1,30 @@
+# Mergify shadow config — OBSERVE ONLY, never merges.
+# Prepared 2026-11-09 for the gigafab-mq-scratch shadow eval.
+# The Mergify GitHub App is NOT installed on this repo yet; this file does
+# nothing until an admin installs the app (one click, no card, free tier).
+#
+# Shadow design: PRs labelled `mergify-shadow` enter the queue; Mergify
+# creates temporary batch PRs (mergify/merge-queue/*) and runs CI on them,
+# but merge_conditions require a check that never exists, so nothing ever
+# merges. Observation target: the temporary batch PRs appear + CI runs on
+# them + the original PRs stay open = proof Mergify waits for CI on the
+# combination. The merge step itself is NOT verified by this shadow; a full
+# canary would let it merge synthetic PRs in this scratch repo.
+queue_rules:
+  - name: default
+    queue_conditions:
+      - check-success=shadow-ci
+      - label=mergify-shadow
+    merge_conditions:
+      - check-success=shadow-never-passes
+    batch_size: 2
+    method: squash
+pull_request_rules:
+  - name: queue shadow PRs
+    conditions:
+      - label=mergify-shadow
+    actions:
+      queue:
+        name: default
+merge_queue:
+  max_parallel_checks: 2
