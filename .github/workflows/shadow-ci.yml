@@ -1,0 +1,20 @@
+# Trivial CI for the Mergify shadow eval (scratch repo only).
+# Produces a check named `shadow-ci` on every PR, so Mergify's queue has
+# something real to wait on. Sleeps 10s so the wait is observable.
+# Runs on GitHub-hosted runners (free for this public repo).
+name: shadow-ci
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  shadow-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sleep so the wait is observable
+        run: sleep 10
+      - name: Report
+        run: echo "shadow-ci ok on $GITHUB_SHA"
