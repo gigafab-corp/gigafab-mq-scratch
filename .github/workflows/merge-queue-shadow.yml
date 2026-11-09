@@ -20,6 +20,7 @@ jobs:
     steps:
       - uses: igorjs/gh-actions-merge-queue@425ab256b34b63d260e600da5773d0da277e96f0
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           base_branch: main
           mode: shadow
           merge_method: squash
