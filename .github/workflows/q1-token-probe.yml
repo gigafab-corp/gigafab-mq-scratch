@@ -1,0 +1,28 @@
+# Q1 token-scope probe (shadow repo only).
+# Question: does GITHUB_TOKEN with `pull-requests: read` suffice to
+# GET /pulls/<n> labels on this repo?
+# Prints only the HTTP status and the label names — never the token.
+name: q1-token-probe
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe PR labels via API
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          code=$(curl -sS -o /tmp/pr.json -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$REPO/pulls/1")
+          echo "HTTP=$code"
+          if [ "$code" = "200" ]; then
+            echo "labels:"
+            jq -r '.labels[]?.name' /tmp/pr.json
+          else
+            echo "API read failed"
+            head -c 300 /tmp/pr.json; echo
+          fi
