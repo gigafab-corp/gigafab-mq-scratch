@@ -1,0 +1,26 @@
+# Ceiling falsifier harness (shadow repo only). Runs the batch-aware
+# pr_diff_ceiling card on every PR (including Mergify batch drafts) so the
+# four falsifiers can be observed end-to-end. Mirrors the production
+# gate-a FAST_RED 14/14 step: pull-requests: read + GH_TOKEN for the
+# per-constituent waiver lookup. fetch-depth 0: the card walks the
+# first-parent chain, which needs full history.
+name: ceiling-shadow
+on:
+  pull_request:
+    branches:
+      - main
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  ceiling:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: pr_diff_ceiling
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIGAFAB_REPO: ${{ github.repository }}
+        run: bash tests/pr_diff_ceiling_acceptance.sh
