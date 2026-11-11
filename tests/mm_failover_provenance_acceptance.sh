@@ -560,3 +560,4 @@ wait_group g3 "$_g3_pid" "$MUT/group_g3.result" 9
 echo
 printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
+# B2 shadow F3 card-only change
