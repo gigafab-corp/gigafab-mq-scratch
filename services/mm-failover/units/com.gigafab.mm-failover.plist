@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 模板（W-14 D-02）：macmini 上 mm-failover 的 launchd 单元。
+     现网 plist 在宿主 ~/Library/LaunchAgents/，本文件为入仓副本，
+     供宿主重建时参考；部署前按本机调整用户路径与令牌注入方式。
+     令牌绝不写入本文件：GIGAFAB_MM_TOKEN 只放在 0600 env 文件里，
+     由 launchctl setenv 或包装脚本注入。-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.gigafab.mm-failover</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/dongshenglu/.local/bin/mm-failover.py</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/dongshenglu/Library/Logs/mm-failover.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/dongshenglu/Library/Logs/mm-failover.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>MM_FAILOVER_LISTEN_HOST</key>
+        <string>127.0.0.1</string>
+        <key>MM_FAILOVER_LISTEN_PORT</key>
+        <string>4180</string>
+    </dict>
+</dict>
+</plist>

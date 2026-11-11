@@ -1,0 +1,45 @@
+# b2-shadow.yml — B2 shadow harness (scratch repo only).
+# Mirrors the gate-a FR3 decide + FR3 step (same step names, same `if:`
+# polarity, same env) so falsifiers F1-F13 can run against real CI.
+# Runs on GitHub-hosted runners; never touches gigafab or its runners.
+# The FR3 card + inputs are byte-identical copies of gigafab@b113bda3.
+name: b2-shadow
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  b2-shadow:
+    runs-on: ubuntu-latest
+    env:
+      GIGAFAB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      GATE_ASSERTION_GUARD_MODE: enforce
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: B2 FR3 skip decision
+        id: b2
+        env:
+          B2_ANCHOR_HASH: ${{ vars.B2_LAST_FULL_INPUTS_HASH }}
+          B2_ANCHOR_SHA: ${{ vars.B2_LAST_FULL_SHA }}
+          B2_ANCHOR_AT: ${{ vars.B2_LAST_FULL_AT }}
+          B2_ANCHOR_RUN_ID: ${{ vars.B2_LAST_FULL_RUN_ID }}
+          B2_FORCE_FULL: ${{ contains(github.event.pull_request.labels.*.name, 'b2-force-full') }}
+        run: |
+          # Runs the MERGE_BASE blob of the decide script (design §2.2); a PR
+          # cannot rewrite its own skip decision. Any failure here leaves
+          # run_fr3 unset, so FR3 runs (fail-closed, design §2.3).
+          MB="$(git merge-base "${GIGAFAB_BASE_SHA:-origin/main}" HEAD 2>/dev/null || true)"
+          if [ -n "$MB" ]; then
+            git show "$MB:scripts/b2_decide.sh" 2>/dev/null | bash || true
+          fi
+          exit 0
+      - name: FAST_RED 3/14 mm_failover_provenance
+        if: ${{ steps.b2.outputs.run_fr3 != 'false' }}
+        run: bash scripts/gate_assertion_guard.sh tests/mm_failover_provenance_acceptance.sh
+      - name: Shadow smoke (other work still runs)
+        run: echo "b2-shadow smoke ok on $GITHUB_SHA"

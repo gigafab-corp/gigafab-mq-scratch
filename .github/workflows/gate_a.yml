@@ -1,0 +1,531 @@
+# GigaFab Gate A (Self-hosted) — WP3-2
+#
+# A-segment formal gate on the self-hosted Aimax gate pool. It is not
+# a Required Status Check: merges are judged on its observed conclusion
+# (aggregate green, see 25 号文件). The deterministic gate (merge_queue_gate.yml) is
+# retired and its file deleted by I-22 step 2 (PR #2493); it no longer runs anywhere.
+# Purpose: judge a PR fast (FAST_RED 14 + parser steps A-1–A-3) on the
+# self-hosted Aimax gate pool (labels gigafab-gate, gigafab-mem8g; job
+# timeout 30 min). Promoted from the WP3-1 shadow gate
+# (wp3_shadow_gate.yml) by `git mv`; the shadow's 3x green runs
+# (run 42148457774) are this file's verification history.
+# Issue: #2256 (WP3-2). Design: #2256 "WP3 席定夺" (2026-11-08 note:
+# the design file 23-wp3-2-design.md was never filed in the repo).
+# B2 (wp3_evidence.yml) is NOT in this PR: it waits on the gate seat's
+# written conclusion on the landing label and P4 applicability (U-8).
+name: GigaFab Gate A (Self-hosted)
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  # The ceiling card (FAST_RED 14/14) reads each batch constituent's own
+  # ceiling-waived label live via the API (batch PR labels are not the
+  # constituents' labels); pull-requests: read is the only scope it needs.
+  pull-requests: read
+
+concurrency:
+  group: gate-a-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate-a:
+    name: gate-a
+    runs-on: [self-hosted, linux, x64, gigafab-gate, gigafab-mem8g]
+    timeout-minutes: 30
+    env:
+      GIGAFAB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      # S-01-13 Phase 2 (enforce): the assertion guard fails any FAST_RED
+      # step that exits 0 with no PASS= tally (zero-assertion goes red),
+      # and any step that exits 0 while its last tally shows FAIL>0
+      # (masked failure, M5: the test's own tally reports failures its
+      # exit code hides). Phase 1 (observe) only recorded notices. All 4
+      # F-1 cards now print a PASS= tally (#2574 fixed 3; #2386 added
+      # pr_diff_ceiling, the 4th).
+      GATE_ASSERTION_GUARD_MODE: enforce
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Probe egress after checkout failure
+        if: failure() && steps.checkout.conclusion == 'failure'
+        timeout-minutes: 2
+        run: |
+          # #2425 (A): post-checkout egress probe. Strictly one-way attribution:
+          # a failed probe CONFIRMS egress is still down; a passed probe only
+          # says "undetermined" — the flap may already have passed between the
+          # Checkout failure and this probe. Never blame the PR diff. The job
+          # verdict is unchanged either way (this step always exits 0).
+          set -uo pipefail
+          if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || ! command -v timeout >/dev/null 2>&1; then
+            echo "::notice title=Checkout egress undetermined::probe tools missing (git/curl/timeout) — cannot judge egress; check the time window per R-G-041"
+            exit 0
+          fi
+          probe_ok=1
+          if ! timeout 10 git ls-remote https://github.com/jajabong/gigafab.git HEAD >/dev/null 2>&1; then
+            probe_ok=0
+          fi
+          http_code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' https://api.github.com 2>/dev/null || true)
+          if [ "$http_code" = "000" ]; then
+            probe_ok=0
+          fi
+          if [ "$probe_ok" -eq 0 ]; then
+            echo "::error title=Egress checkout failure::EGRESS: Checkout failed and the egress probe failed too — egress is still down; rerun after the flap passes"
+          else
+            echo "::notice title=Checkout egress undetermined::Checkout failed but the egress probe passed — the flap may have passed; 未定 (undetermined), check the time window per R-G-041 before blaming the PR diff"
+          fi
+
+      # A-6 Exemption-declaration gate (R5, S11 secondary hardening):
+      # for the PR under test — or, on a Mergify batch head, for each
+      # constituent PR — fetch the live title/body and run the shipped
+      # scripts/exemption_row_check.py against them. Fail-fast, right
+      # after Checkout and before A-1; independent of tree validity.
+      # NOT a FAST_RED member (FAST_RED stays 14, SUITE unchanged):
+      # its `run:` line matches neither the guard pattern nor the
+      # fanout pattern the membership self-check extracts. A refuse
+      # fails gate-a, which fails aggregate, which fails Mergify's
+      # merge conditions. The batch PR itself is never checked.
+      - name: A-6 Exemption-declaration gate (R5)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIGAFAB_REPO: ${{ github.repository }}
+        run: bash scripts/exemption_gate_check.sh
+
+      - name: A-1 Validate repository YAML without executing repository code
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          class NoDuplicateKeysLoader(yaml.SafeLoader):
+              pass
+
+          def construct_mapping(loader, node, deep=False):
+              mapping = {}
+              for key_node, value_node in node.value:
+                  key = loader.construct_object(key_node, deep=deep)
+                  if key in mapping:
+                      raise ValueError(f"duplicate YAML key: {key}")
+                  mapping[key] = loader.construct_object(value_node, deep=deep)
+              return mapping
+
+          NoDuplicateKeysLoader.add_constructor(
+              yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+              construct_mapping,
+          )
+
+          for path in sorted(Path('.github/workflows').glob('*.yml')):
+              yaml.load(path.read_text(encoding='utf-8'), Loader=NoDuplicateKeysLoader)
+              print(f"YAML_OK {path}")
+          PY
+
+      - name: A-2 Validate shell syntax and repository hygiene
+        run: |
+          set -euo pipefail
+          find scripts tests .github/scripts -type f -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
+          # Audit v2.0 §10.6: this gate only ever looked at shell. The 74 Python
+          # files in this repo — including the governance-critical
+          # scripts/pr_risk_classify.py — were not even syntax-checked on the
+          # merge path. `python3 -m py_compile` is stdlib-only, so it cannot be
+          # the thing that fails for an unrelated environment reason.
+          if command -v python3 >/dev/null 2>&1; then
+            find scripts .github/scripts -type f -name '*.py' -not -path '*/__pycache__/*' -print0 \
+              | xargs -0 -r python3 -m py_compile
+            n_py=$(find scripts .github/scripts -type f -name '*.py' -not -path '*/__pycache__/*' | wc -l | tr -d ' ')
+            if [ "$n_py" -lt 10 ]; then
+              echo "::error::only $n_py Python files found under scripts/ and .github/scripts/ — the path filter is probably wrong" >&2
+              exit 1
+            fi
+            echo "py_compile OK ($n_py files)"
+          else
+            echo "::warning::python3 unavailable on this runner — Python syntax was NOT checked"
+          fi
+          # #1080. `git diff --check HEAD^ HEAD` reads ONE commit — the last
+          # one. A worker that lands the work in three commits puts trailing
+          # whitespace into commit 1, more into commit 2, and a clean ASCII
+          # commit 3 last: the gate reads commit 3, finds nothing, and the
+          # garbage from commits 1 and 2 merges into main intact. That is not
+          # hypothetical here — e2fa742 and ea25fb4 are both after-the-fact
+          # repairs of whitespace that this line had already waved through.
+          #
+          # So the range is the PR's whole commit span. `git diff --check`
+          # over `BASE..HEAD` inspects every added line in every commit of
+          # the PR, which is what "the gate" has to mean.
+          #
+          # The BASE resolution is deliberately NOT `|| true`-able. If the
+          # merge-base cannot be resolved we do not get to fall back to a
+          # weaker check — a check that silently degrades is how a gate stops
+          # being a gate (the same sentence this file already writes about
+          # rewriting `x = x + 1` and passing every parser above).
+          # A shallow clone does not make this gate FAIL. It makes it PASS
+          # without having looked at anything, which is strictly worse. Measured
+          # while writing tests/commit_range_whitespace_acceptance.sh: at
+          # `fetch-depth: 1`, with an `origin/main` ref present,
+          # `git merge-base origin/main HEAD` still resolves -- to HEAD itself --
+          # so the range collapses to empty, `git diff --check HEAD..HEAD` finds
+          # nothing and exits 0. M4 in that suite covers the missing-ref case;
+          # this covers the starved-history case, which no behavioural test can
+          # catch because the gate reports success.
+          #
+          # So the clone depth is checked as a fact about the repository, and a
+          # shallow one is refused outright. This is also what keeps
+          # `deterministic_gate_catches_head_parent` in
+          # scripts/assertion_attestation.py alive: its mutation rebuilds the
+          # copy at depth 1, and without this line the mutant survived and the
+          # attestation silently reported VACUOUS.
+          if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+            echo "::error title=whitespace gate cannot run::this is a shallow clone; merge-base may resolve to the wrong ancestor and the checked range would collapse to empty, so a clean result here would mean nothing was checked" >&2
+            exit 1
+          fi
+          # #1478: the base of the range must be **pinned at fetch time**, not
+          # re-resolved later by a mutable ref NAME.
+          #
+          # Measured (2026-10-21, aimax): `origin/main` is a name whose
+          # existence is a SIDE EFFECT of a network fetch. When the egress
+          # degrades (early EOF / invalid index-pack output / http.lowSpeedLimit
+          # — all three measured on this host that night) the branch mirror can
+          # leave it absent, and then `git merge-base origin/main HEAD` dies with
+          # rc=128 ("fatal: Not a valid object name origin/main") => this gate
+          # goes RED for a tree that is perfectly clean, and the same tree is
+          # GREEN on the next run. The verdict's subject had become the egress
+          # instead of the code.
+          #
+          # The checkout step now pins the base SHA it just fetched into
+          # GIGAFAB_BASE_SHA (same principle as #1657's "the tree you judge must
+          # be the tree you fetched"). The resolution below is therefore local
+          # and offline: a pinned SHA is an ancestor of HEAD, so it is already
+          # in the object store. The name is only a fallback for runs that
+          # predate the pin.
+          GATE_BASE="${GIGAFAB_BASE_SHA:-origin/main}"
+          if ! MERGE_BASE=$(git merge-base "$GATE_BASE" HEAD 2>/dev/null); then
+            echo "::error title=whitespace gate cannot run::cannot resolve merge-base between ${GATE_BASE} and HEAD; refusing to report PASS for a check that never executed" >&2
+            exit 1
+          fi
+          if [ -z "$MERGE_BASE" ]; then
+            echo "::error title=whitespace gate cannot run::merge-base resolved to an empty value; refusing to report PASS for a check that never executed" >&2
+            exit 1
+          fi
+          echo "whitespace gate range: ${MERGE_BASE:0:12}..HEAD"
+          git diff --check "${MERGE_BASE}..HEAD"
+          # Coverage is now asymmetric on purpose: the secret scan below runs
+          # over the whole work tree via `git grep`, while the whitespace check
+          # runs over the PR's commit range. Both are the wider of their two
+          # natural scopes; neither was narrowed to make this fix smaller.
+          if git grep -n -I -E '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY-----)' -- . ':!.github/workflows/gate_a.yml'; then
+            echo 'secret-like material detected' >&2
+            exit 1
+          fi
+
+          # ── #1316 环境扫描：检查进程环境中是否出现已登记的密钥前缀 ──
+          # 只打印变量名，绝不打印值本身。空集时跳过，有命中时 fail-closed。
+          # 这是对文件扫描的补充：$BASH_ENV 等机制会把密钥注入每个非交互 bash，
+          # 而文件扫描对进程环境完全不可见。
+          ENV_SCAN_RESULT=$(env | grep -oE '^(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY-----)' 2>/dev/null || true)
+          if [ -n "$ENV_SCAN_RESULT" ]; then
+            echo "::error title=secret-like material in environment::detected secret-like prefixes in process environment (values not printed)" >&2
+            echo "Detected variable names:" >&2
+            echo "$ENV_SCAN_RESULT" | sed 's/=.*/=<redacted>/' >&2
+            exit 1
+          fi
+
+      # 独立成步而不是并进上面的卫生步骤，是被门禁自己逼出来的：
+      # tests/python_lint_coverage_acceptance.sh 与
+      # tests/matrix_gate_claim_fidelity_acceptance.sh 会**抽取那个步骤**去跑
+      # 自己的 fixture，而 fixture 的 merge-base 就是 HEAD、净变更为空 —— 于是
+      # 「空交付必须红」这条正确判据把它们判红（实测 PASS=21 FAIL=2）。
+      # 「代码写得好不好」和「这张 PR 到底改没改」是两个问题域，各归各的步骤。
+      - name: A-3 Refuse a PR that delivered nothing
+        run: |
+          set -euo pipefail
+          # ---- 基座：本 workflow 只在 pull_request 上触发，基座恒为 merge-base。
+          # 注意：push 事件下 `git merge-base origin/main HEAD` == HEAD（2026-10-22
+          # 实测，主干回归 run 39773773199），净差集恒为空；若将来给本 workflow 加
+          # push 触发，须先把基座改成 `github.event.before`，不可直接复用这里。
+          MERGE_BASE=$(git merge-base "${GIGAFAB_BASE_SHA:-origin/main}" HEAD 2>/dev/null || echo "")
+          if [ -z "$MERGE_BASE" ]; then
+            echo "::error title=zero delivery::cannot resolve the delivery base; refusing to report PASS for a check that never executed" >&2
+            exit 1
+          fi
+
+          # ---- zero-delivery detector -----------------------------------
+          # Every check above is a *parser*: it reads text and reports whether
+          # the text is well formed. Not one of them can report whether the PR
+          # *did* anything. Two real deliveries measured 2026-10-15 got all
+          # the way through this gate anyway:
+          #
+          #   PR #1288 — the entire delta was one new file,
+          #   scripts/runner_pool_provision.sh.backup, whose bytes are
+          #   identical to scripts/runner_pool_provision.sh. 165/0 green,
+          #   evidence:ok, MERGEABLE, merge:auto-candidate, and #851 (the
+          #   issue it claimed) untouched.
+          #   PR #1261 — every file it shipped had already been merged via
+          #   PR #1265, and its "Validation" section reported a playwright
+          #   run (`1 passed (330ms)`) in a repository with no npm project
+          #   and no tests/e2e/ at all.
+          #
+          # So this gate asks the one question none of the others ask. It is
+          # deliberately narrow, because a delivery gate that cries wolf is
+          # worse than none: both rules below fail a PR *only* when it
+          # delivered nothing at all, never when it delivered something real.
+          ZD_CHANGED=$(git diff --name-only "${MERGE_BASE}..HEAD")
+          if [ -z "$ZD_CHANGED" ]; then
+            echo "::error title=zero delivery::the net delta against ${MERGE_BASE:0:12} is empty — this PR delivered nothing" >&2
+            exit 1
+          fi
+          # (a) An editor/backup artifact is not code. A .bak with unique
+          # bytes is exactly as dead as one that is a byte-identical copy, so
+          # this rule does not care whether the content differs.
+          ZD_ARTIFACT=$(printf '%s\n' "$ZD_CHANGED" | grep -E '\.(bak|backup|orig|rej|swp)$|~$' || true)
+          if [ -n "$ZD_ARTIFACT" ]; then
+            echo "::error title=zero delivery::the delta contains editor/backup artifacts, which are not a delivery::${ZD_ARTIFACT}" >&2
+            exit 1
+          fi
+          # (b) A file whose bytes already exist in the tree under another
+          # name is a copy, not a change. Only "ALL added files are copies"
+          # fails the PR: one legitimately identical fixture (a vendored
+          # LICENSE, a golden file) must not redden an otherwise real change.
+          ZD_ADDED=$(git diff --name-only --diff-filter=A "${MERGE_BASE}..HEAD")
+          # ZD_UNIQUE / ZD_ADDED_COUNT are read by the summary line BELOW, which
+          # runs for every PR — including the modify-only ones, where ZD_ADDED is
+          # empty and the whole block is skipped. Initialising them *inside* the
+          # block (as the first version did) left them unbound under `set -u`,
+          # so the summary line aborted with `ZD_UNIQUE: unbound variable` and
+          # every PR that only edits existing files was refused.
+          # Measured 2026-10-15 on PR #1303 (one modified test file, 167/0 green
+          # locally) — the gate's own detector was the only red.
+          ZD_UNIQUE=0
+          ZD_ADDED_COUNT=0
+          if [ -n "$ZD_ADDED" ]; then
+            ZD_ADDED_COUNT=$(printf '%s\n' "$ZD_ADDED" | grep -c .)
+            ZD_TMPD=$(mktemp -d)
+            printf '%s\n' "$ZD_ADDED" > "$ZD_TMPD/added.txt"
+            while IFS= read -r ZD_P; do
+              [ -n "$ZD_P" ] || continue
+              [ -f "$ZD_P" ] || continue
+              ZD_SUM=$(git hash-object "$ZD_P")
+              if ! git ls-tree -r --full-tree HEAD | awk -v s="$ZD_SUM" -v self="$ZD_P" \
+                   '$3==s && $4!=self { found=1 } END { exit !found }'; then
+                ZD_UNIQUE=$((ZD_UNIQUE + 1))
+              fi
+            done < "$ZD_TMPD/added.txt"
+            rm -rf "$ZD_TMPD"
+            if [ "$ZD_UNIQUE" -eq 0 ]; then
+              echo "::error title=zero delivery::every file this PR adds is byte-identical to a file already in the tree — it is a copy, not a delivery::${ZD_ADDED}" >&2
+              exit 1
+            fi
+          fi
+          echo "zero-delivery check: ${MERGE_BASE:0:12}..HEAD touched $(printf '%s\n' "$ZD_CHANGED" | wc -l | tr -d ' ') path(s), $ZD_ADDED_COUNT added, $ZD_UNIQUE of them new-and-distinct"
+
+      # A-4 AI-PR duplication / bloat gate (Gate 1, design
+      # scratch/line2-dup-gate-design/design.md §1). Plain step, NOT a
+      # FAST_RED member (it judges the PR diff, not a product behavior —
+      # the gate_assertion_guard self-proof precedent). Observe by
+      # default; the parent flips DUP_GATE_MODE to enforce after the
+      # calibration + observe data (design §4).
+      - name: A-4 AI-PR duplication / bloat gate (Gate 1)
+        run: python3 scripts/dup_gate.py --mode "${DUP_GATE_MODE:-observe}"
+      # A-5 Deprecated-patterns gate (Gate 2, design §2). Same placement
+      # and rollout as A-4. DP-003 (hard-coded SUITE totals) is ACTIVE:
+      # #2517 Scheme A merged via #2533 and the zero-hit check on main
+      # passed, so the dormant-until-#2517 status was flipped in
+      # scripts/deprecated_patterns.txt by the implementation PR.
+      - name: A-5 Deprecated-patterns gate (Gate 2)
+        run: bash scripts/deprecated_patterns_gate.sh --mode "${DEPRECATED_PATTERNS_GATE_MODE:-observe}"
+
+      - name: FAST_RED membership self-check
+        run: |
+          set -uo pipefail
+          # FAST_RED: the 14 cheap, decisive tests. Copied verbatim from the
+          # old gate's step 8 (same order, same inline comments). This is the
+          # single FAST_RED definition: the 14 steps below must equal it (the
+          # self-check below enforces that), and the reconciliation test
+          # extracts it from this file.
+          FAST_RED=(
+            tests/script_inventory_acceptance.sh
+            tests/model_pool_fallback_registry_acceptance.sh
+            # mm-failover 网关的仓内镜像必须自证（指纹棘轮 ＋ 真起服自检 ＋ 无凭证）⇒
+            # 「仓内是快照」这句话从此有机器证据，而不是一句注释。
+            tests/mm_failover_provenance_acceptance.sh
+            tests/script_test_coverage_ratchet_acceptance.sh
+            tests/claim_wiring_acceptance.sh
+            # #2019: printf|grep -q 早退读取器必须在快判层拦住。
+            tests/producer_to_early_exit_reader_acceptance.sh
+            tests/doc_claims_acceptance.sh
+            tests/issue_hygiene_acceptance.sh
+            tests/risk_ladder_absence_acceptance.sh
+            tests/runs_on_routability_acceptance.sh
+            # #1568: runs-on 的 || 兜底串可能命中 2GB 只读哨兵 —— GitHub 对仓库级
+            # 自托管 runner 没有 per-runner 权限作用域，所以这不是「跑错机器」，
+            # 而是「本 workflow permissions 块里的写权限在 2C/1.9G 上执行」。
+            # 含 3 只定点变异体（M1 改回开放串 / M2 裸 self-hosted / M3 对照组）。
+            tests/runs_on_fallback_2gb_acceptance.sh
+            tests/commit_range_whitespace_acceptance.sh
+            # I-34 / B-20: the count tool itself is now a test subject — the
+            # --check fixture card pins consistent / drift / exempt inputs.
+            tests/sync_gate_count_acceptance.sh
+            tests/pr_diff_ceiling_acceptance.sh
+          )
+          # The fast layer judges the checkout of THIS job ($GITHUB_WORKSPACE).
+          # Self-hosted runners reuse the _work dir across runs, but the
+          # checkout resets the worktree each run (clean:true; .git persists),
+          # so this job judges a fresh tree: old gate steps 7/8's GATE_TREE
+          # discipline does not apply here. What still applies is the membership discipline:
+          # the 14 FAST_RED steps below must be exactly the FAST_RED list,
+          # and FAST_RED + SUITE_B + ARCHIVE_EXEMPT must be exactly the
+          # declared SUITE is the derived union of the three lists.
+          # Any drift fails closed here, before any test runs. WF paths
+          # are the $GITHUB_WORKSPACE checkout, per the WP3-2 design
+          # (no GATE_TREE in A).
+          WF_A="$GITHUB_WORKSPACE/.github/workflows/gate_a.yml"
+          WF_B="$GITHUB_WORKSPACE/.github/workflows/gate_b.yml"
+          ARCHIVE_EXEMPT_FILE="$GITHUB_WORKSPACE/tests/archive_exempt.txt"
+          for f in "$WF_A" "$WF_B" "$ARCHIVE_EXEMPT_FILE"; do
+            if [ ! -f "$f" ]; then
+              echo "::error title=Adjudication whitelist missing::$f not found - refusing to judge against a missing whitelist" >&2
+              exit 1
+            fi
+          done
+          # Extract a bash array literal (whole-line `NAME=(` ... `)` only, so
+          # the awk program text itself can never match). Same discipline the
+          # old gate used for SUITE (one literal per file: FAST_RED here,
+          # SUITE_B in gate_b.yml).
+          fast_red_lines=$(awk '
+            /^[[:space:]]*FAST_RED=\(/ {f=1; next}
+            f && /^[[:space:]]*\)$/ {f=0; next}
+            f && /^[[:space:]]*tests\/[^[:space:]]+_acceptance\.sh$/ {print $1}
+          ' "$WF_A")
+          suite_b_lines=$(awk '
+            /^[[:space:]]*SUITE_B=\(/ {f=1; next}
+            f && /^[[:space:]]*\)$/ {f=0; next}
+            f && /^[[:space:]]*tests\/[^[:space:]]+_acceptance\.sh$/ {print $1}
+          ' "$WF_B")
+          # Archive-exempt list: single fact source is
+          # tests/archive_exempt.txt (#2329 relocated it out of the
+          # reconciliation test; this step no longer depends on that test
+          # file existing). Plain data file: one entry per line, `#` comments.
+          archive_exempt_lines=$(grep -E '^tests/[^[:space:]]+[.]sh$' "$ARCHIVE_EXEMPT_FILE" || true)
+          n_fast_red=$(printf '%s\n' "$fast_red_lines" | grep -c . || true)
+          n_suite_b=$(printf '%s\n' "$suite_b_lines" | grep -c . || true)
+          n_archive_exempt=$(printf '%s\n' "$archive_exempt_lines" | grep -c . || true)
+          # Totals are derived from the three lists (no literal expectations):
+          # the declared SUITE is fast-red + suite-b + archive-exempt.
+          echo "declared $((n_fast_red+n_suite_b+n_archive_exempt)) / archive-exempt $n_archive_exempt / fast-red $n_fast_red / effective-b1 $n_suite_b"
+          # Structural check only: each list must be non-empty. Exact
+          # membership is enforced by the disjointness, step-match, and
+          # on-disk checks below, plus the reconciliation test.
+          if [ "$n_fast_red" -eq 0 ] || [ "$n_suite_b" -eq 0 ] || [ "$n_archive_exempt" -eq 0 ]; then
+            echo "::error::three-way lists must be non-empty: fast-red $n_fast_red, suite-b $n_suite_b, archive-exempt $n_archive_exempt - failing closed" >&2
+            exit 1
+          fi
+          # Disjointness: a test in two lists is a duplicate run, not a fast verdict.
+          overlap_check() { # <list-A> <list-B> <label>
+            overlap=$(comm -12 <(printf '%s\n' "$1" | grep . | sort) <(printf '%s\n' "$2" | grep . | sort) || true)
+            if [ -n "$overlap" ]; then
+              echo "::error::lists overlap ($3): $(printf '%s' "$overlap" | tr '\n' ' ') - failing closed" >&2
+              exit 1
+            fi
+          }
+          overlap_check "$fast_red_lines" "$suite_b_lines" "FAST_RED / SUITE_B"
+          overlap_check "$fast_red_lines" "$archive_exempt_lines" "FAST_RED / ARCHIVE_EXEMPT"
+          overlap_check "$suite_b_lines" "$archive_exempt_lines" "SUITE_B / ARCHIVE_EXEMPT"
+          # The 14 FAST_RED cards below must BE the FAST_RED list (steps drift = silent
+          # unrun tests). They run as two steps: one guard-wrapped step for
+          # FR3 (mm_failover_provenance, the long pole, kept serial) and one
+          # fanout step (scripts/gate_fast_red_fanout.sh) carrying the other
+          # 13 cards as arguments (gate-latency design section 3, step A:
+          # job-internal fanout, not a matrix — a matrix would pay one full
+          # Checkout per card). The step lines are the `run: bash
+          # scripts/gate_assertion_guard.sh tests/...` line plus the `run: bash
+          # scripts/gate_fast_red_fanout.sh tests/... ...` line's arguments
+          # (S-01-13 Phase 1: every FAST_RED card still runs through the
+          # assertion guard wrapper — the fanout script wraps each card in
+          # it — so dropping the wrapper, dropping the fanout step, or
+          # dropping a card from its argument list all fail closed here).
+          step_lines=$(grep -E '^[[:space:]]*run: bash scripts/gate_assertion_guard\.sh tests/[^[:space:]]+_acceptance\.sh$' "$WF_A" | sed 's/^.*gate_assertion_guard\.sh //')
+          fanout_lines=$(grep -E '^[[:space:]]*run: bash scripts/gate_fast_red_fanout\.sh( tests/[^[:space:]]+_acceptance\.sh)+$' "$WF_A" | sed 's/^.*gate_fast_red_fanout\.sh //' | tr ' ' '\n' | grep -E '^tests/[^[:space:]]+_acceptance\.sh$' || true)
+          step_lines=$(printf '%s\n%s\n' "$step_lines" "$fanout_lines" | grep . || true)
+          if [ "$(printf '%s\n' "$step_lines" | sort)" != "$(printf '%s\n' "$fast_red_lines" | grep . | sort)" ]; then
+            echo "::error::the 14 FAST_RED steps in this workflow do not equal the FAST_RED list - failing closed" >&2
+            comm -3 <(printf '%s\n' "$step_lines" | sort) <(printf '%s\n' "$fast_red_lines" | grep . | sort) >&2 || true
+            exit 1
+          fi
+          # Every FAST_RED test must exist on disk (archive-exempt is never a
+          # member of FAST_RED, so there is no exemption here).
+          missing=0
+          for t in $fast_red_lines; do
+            if [ ! -f "$GITHUB_WORKSPACE/$t" ]; then
+              echo "::error::FAST_RED test does not exist: $t" >&2
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          echo "fast-red self-check: $n_fast_red/$n_fast_red steps match FAST_RED, three-way $n_fast_red+$n_suite_b+$n_archive_exempt=$((n_fast_red+n_suite_b+n_archive_exempt)), no overlap, all on disk"
+      # #2517 derived counting §4: no-silent-test-deletion ratchet.
+      # scripts/sync_gate_count.py --ratchet compares the merge-base tree
+      # with the PR tree. It fails closed when a live-table entry is deleted
+      # without being moved to ARCHIVE_EXEMPT (criterion 3), when the live
+      # tables changed but the doc counts did not follow (criterion 1), or
+      # when a doc count was rolled back (criterion 2). The base resolves
+      # via GIGAFAB_BASE_SHA (job env: the PR base SHA) -> merge-base.
+      # It runs on every PR: when the live tables are unchanged it exits 0
+      # immediately ("活表 未变").
+      # Criterion 3 has a third legal path (#2261): a deleted entry may be
+      # carried by a valid supersession record in tests/superseded.txt —
+      # the name is taken over by a live successor card (record new in
+      # this PR, successor exists + registered in a live table, migration
+      # table file exists, ruling reference well-formed). The registry
+      # never shrinks except on revert. The machine verifies pointers and
+      # existence only; content coverage and ruling truth are human
+      # judgment at merge review.
+      - name: No-silent-test-deletion ratchet
+        run: |
+          set -euo pipefail
+          python3 scripts/sync_gate_count.py --ratchet
+      # S-01-13 Phase 1: the guard's own self-proof runs here, before the
+      # FAST_RED steps it wraps — a broken wrapper fails fast, before any
+      # wrapped test runs. This step is NOT one of the 14 FAST_RED steps
+      # (the self-check above only matches the wrapped `run:` lines), and
+      # the test is ACCEPTANCE_SUITE_EXCLUDED so it is not counted in SUITE.
+      - name: gate_assertion_guard self-proof
+        run: bash tests/gate_assertion_guard_acceptance.sh
+      # Gate-latency design section 3, step A: the 13 non-FR3 FAST_RED cards
+      # run as background jobs inside ONE step (scripts/gate_fast_red_fanout.sh),
+      # not 13 serial steps and not a matrix (a matrix would pay one full
+      # Checkout per card). FR3 keeps its own serial step below — it is the
+      # ~272s long pole and its parallelisation is design section 5 (C2).
+      # The fanout runs first so a fast card's red skips the 272s FR3 step.
+      # The card list lives in this step's argument list (single source of
+      # record — the membership self-check above extracts it from here); the
+      # script takes cards as arguments and carries no list of its own.
+      - name: FAST_RED 1/14,2/14,4/14-14/14 fanout (13 cards)
+        env:
+          # pr_diff_ceiling (FAST_RED 14/14, runs inside this fanout)
+          # reads each batch constituent's own ceiling-waived label
+          # live via the API (#2663 batch-aware); it needs a token +
+          # repo, as the serial step had.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIGAFAB_REPO: ${{ github.repository }}
+        run: bash scripts/gate_fast_red_fanout.sh tests/script_inventory_acceptance.sh tests/model_pool_fallback_registry_acceptance.sh tests/script_test_coverage_ratchet_acceptance.sh tests/claim_wiring_acceptance.sh tests/producer_to_early_exit_reader_acceptance.sh tests/doc_claims_acceptance.sh tests/issue_hygiene_acceptance.sh tests/risk_ladder_absence_acceptance.sh tests/runs_on_routability_acceptance.sh tests/runs_on_fallback_2gb_acceptance.sh tests/commit_range_whitespace_acceptance.sh tests/sync_gate_count_acceptance.sh tests/pr_diff_ceiling_acceptance.sh
+      - name: FAST_RED 3/14 mm_failover_provenance
+        run: bash scripts/gate_assertion_guard.sh tests/mm_failover_provenance_acceptance.sh
+
+  aggregate:
+    name: aggregate
+    runs-on: [self-hosted, linux, x64, gigafab-write]
+    timeout-minutes: 5
+    needs: gate-a
+    if: always()
+    steps:
+      - name: Fail if gate-a did not succeed
+        run: |
+          echo "gate-a result: ${{ needs.gate-a.result }}"
+          if [ "${{ needs.gate-a.result }}" != "success" ]; then
+            exit 1
+          fi
+          echo "gate-a success"
