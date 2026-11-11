@@ -30,3 +30,5 @@ pull_request_rules:
         name: default
 merge_queue:
   max_parallel_checks: 2
+
+# step-0 validation trigger (2026-11-11): comment-only change to surface the Mergify config check on this PR; config semantics unchanged.
