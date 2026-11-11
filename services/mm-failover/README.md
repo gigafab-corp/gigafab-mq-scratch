@@ -6,3 +6,4 @@ codex 的 MiniMax 双号 + Baosi 自动故障转移代理：监听 `127.0.0.1:41
 - `units/`：macmini 侧 launchd 单元模板 `com.gigafab.mm-failover.plist`（现网 plist 在宿主 `~/Library/LaunchAgents/`，本文件为入仓副本；令牌绝不写入 plist，只放 0600 env 文件）。
 - 兜底模型与实测表：`provenance.md`（measured-models 段；改模型名必须先改表，门禁逐字比对 `BAOSI_FALLBACK_MODEL`）。
 - 共享面护栏：非回环绑定即启用——拒绝通配地址（`0.0.0.0` 直接拒绝启动）、强制 Bearer 令牌、只暴露 `/v1/chat/completions` 与 `/healthz`、剥掉 tools 面、并发槽位上限。
+# B2 shadow F11a gateway README content change (in-prefix, not fingerprinted)
