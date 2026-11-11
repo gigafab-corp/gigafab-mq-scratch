@@ -1,0 +1,5 @@
+cell: M8
+layer: L1 (single)
+repo: jajabong/gigafab-mq-scratch
+created_utc: 2026-11-11T07:04:30Z
+purpose: merge-async merge_queue probe, main-base single PR
