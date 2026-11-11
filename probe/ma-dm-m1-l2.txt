@@ -1,0 +1,5 @@
+cell: M1
+layer: L2 (top)
+repo: jajabong/gigafab-mq-scratch
+created_utc: 2026-11-11T05:55:40Z
+purpose: merge-async direct_merge probe, top layer
