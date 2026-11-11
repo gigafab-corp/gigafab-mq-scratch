@@ -1,0 +1,5 @@
+cell: M3b
+layer: L1 (bottom)
+repo: jajabong/gigafab-mq-scratch
+created_utc: 2026-11-11T06:29:00Z
+purpose: merge-async merge_queue minimal-payload probe, bottom layer
