@@ -10,7 +10,7 @@ permissions:
   pull-requests: read
 jobs:
   probe:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Probe PR labels via API
         env:
