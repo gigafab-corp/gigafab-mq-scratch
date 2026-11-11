@@ -1,0 +1,27 @@
+# Ubuntu 26.04 canary (scratch repo only).
+# Single smoke-test job on the ubuntu-26.04 runner image, ahead of the
+# ubuntu-latest -> 26.04 migration (window closes 2026-11-19).
+# The 4 shadow workflows are pinned to ubuntu-24.04 (PR #75, merged as
+# 321a1998); this file does NOT change any pin — it only probes whether
+# the 26.04 image works here. If this job goes green, the pins can move
+# to 26.04 in a follow-up PR; if red, the image/label is not yet usable.
+# Reversible: delete this file (or close the PR).
+name: ubuntu-2604-canary
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  canary:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report runner image
+        run: |
+          cat /etc/os-release
+          uname -a
+          python3 --version
+          echo "canary ok on $GITHUB_SHA"
