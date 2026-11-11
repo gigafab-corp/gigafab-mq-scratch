@@ -529,3 +529,4 @@ jobs:
             exit 1
           fi
           echo "gate-a success"
+# B2 shadow F5 gate_a.yml comment
