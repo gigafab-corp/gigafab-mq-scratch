@@ -145,3 +145,4 @@ else
 fi
 echo "done. restart the launchd service by hand if the running copy is still the old one:"
 echo "   launchctl kickstart -k gui/$(id -u)/com.dongshenglu.mm-failover"
+# B2 shadow F4 deployer comment
