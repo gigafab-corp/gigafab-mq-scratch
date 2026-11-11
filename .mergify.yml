@@ -15,8 +15,10 @@ queue_rules:
     queue_conditions:
       - check-success=shadow-ci
       - label=mergify-shadow
+    # Step-1 experiment 2026-11-11: merge_conditions temporarily passable
+    # (shadow-ci) for the §1 settling test; RESTORE to shadow-never-passes after.
     merge_conditions:
-      - check-success=shadow-never-passes
+      - check-success=shadow-ci
     batch_size: 2
     # Step-0 experiment 2026-11-11: max_checks_retries validation probe for gigafab GO decision.
     max_checks_retries: 1
