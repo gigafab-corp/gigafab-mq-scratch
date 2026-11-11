@@ -1,0 +1,16 @@
+# Deliberately failing check for the max_checks_retries section-1 settling test.
+# It is NOT a merge condition and NOT a queue condition: Mergify must ignore it.
+# Runs on every PR to main; always fails fast (exit 1).
+name: shadow-flaky
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  shadow-flaky:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deliberately fail (non-merge-condition check)
+        run: exit 1
