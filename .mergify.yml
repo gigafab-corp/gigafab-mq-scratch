@@ -18,6 +18,8 @@ queue_rules:
     merge_conditions:
       - check-success=shadow-never-passes
     batch_size: 2
+    # Step-0 experiment 2026-11-11: max_checks_retries validation probe for gigafab GO decision.
+    max_checks_retries: 1
     merge_method: squash
 pull_request_rules:
   - name: queue shadow PRs
