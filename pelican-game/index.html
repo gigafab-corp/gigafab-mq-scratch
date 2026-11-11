@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>鹈鹕骑车 · Pelican Ride</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #87ceeb; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; }
+  #wrap { max-width: 860px; margin: 0 auto; padding: 12px; text-align: center; }
+  h1 { margin: 6px 0 2px; font-size: 26px; color: #1c3d4d; }
+  p.sub { margin: 0 0 10px; color: #33566a; font-size: 14px; }
+  #game { display: block; width: 100%; max-width: 800px; height: auto; margin: 0 auto;
+          background: #bfe8f5; border: 3px solid #1c3d4d; border-radius: 10px;
+          touch-action: manipulation; }
+  #hud { display: flex; justify-content: space-between; max-width: 800px; margin: 8px auto 0;
+         font-size: 18px; font-weight: bold; color: #1c3d4d; }
+  #hint { max-width: 800px; margin: 8px auto 0; font-size: 14px; color: #33566a; line-height: 1.6; }
+  #btns { margin-top: 10px; }
+  button { font-size: 16px; padding: 8px 18px; margin: 0 6px; border-radius: 8px;
+           border: 2px solid #1c3d4d; background: #fff; color: #1c3d4d; cursor: pointer; }
+  button:active { background: #dff3fb; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>鹈鹕骑车</h1>
+  <p class="sub">躲石头和水坑，吃鱼加分，越骑越快！撞上就结束。</p>
+  <canvas id="game" width="800" height="400"></canvas>
+  <div id="hud">
+    <span id="score">分数 0</span>
+    <span id="speed">速度 1.0x</span>
+    <span id="best">最高分 0</span>
+  </div>
+  <div id="hint">操作：空格 / ↑ / 点击 / 触摸 = 跳；↓ = 快速落下；R = 重新开始。<br>
+  石头和水坑都会撞翻你；鱼 +10 分；每过 10 秒速度 +0.15x。</div>
+  <div id="btns">
+    <button id="jumpBtn" type="button">跳！</button>
+    <button id="restartBtn" type="button">重新开始 (R)</button>
+  </div>
+</div>
+<script>
+"use strict";
+/* 鹈鹕骑车 — 单文件、零外部依赖、离线可玩。canvas 实现。 */
+var canvas = document.getElementById("game");
+var ctx = canvas.getContext("2d");
+var W = canvas.width, H = canvas.height;
+var GROUND_Y = 330;             // 地面线 y
+var BEST_KEY = "pelican-ride-best";
+
+var state = "ready";            // ready | playing | over
+var score = 0;                  // 距离分 + 吃鱼分
+var fishEaten = 0;
+var best = 0;
+try { best = parseInt(localStorage.getItem(BEST_KEY), 10) || 0; } catch (e) { best = 0; }
+var elapsed = 0;                // 本局秒数
+var speedMul = 1;               // 速度倍率，随时间递增
+var spawnTimer = 0;
+var frame = 0;
+
+var rider = { x: 120, y: GROUND_Y, vy: 0, jumping: false };
+var GRAVITY = 0.75, JUMP_V = -20;
+
+var obstacles = [];             // {x, kind: "rock"|"puddle", w, h}
+var fishes = [];                // {x, y, taken}
+var clouds = [{ x: 80, y: 50, s: 1 }, { x: 350, y: 80, s: 0.7 }, { x: 620, y: 40, s: 1.2 }];
+
+var scoreEl = document.getElementById("score");
+var speedEl = document.getElementById("speed");
+var bestEl = document.getElementById("best");
+
+function baseSpeed() { return 3.5 + elapsed * 0.06; }   // 基础速度随时间递增
+function speed() { return baseSpeed() * speedMul; }
+
+function reset() {
+  state = "playing";
+  score = 0; fishEaten = 0; elapsed = 0; speedMul = 1;
+  spawnTimer = 0; frame = 0;
+  rider.y = GROUND_Y; rider.vy = 0; rider.jumping = false;
+  obstacles = []; fishes = [];
+}
+
+function jump() {
+  if (state === "ready" || state === "over") { reset(); return; }
+  if (!rider.jumping) { rider.vy = JUMP_V; rider.jumping = true; }
+}
+function fastDrop() {
+  if (state === "playing" && rider.jumping && rider.vy < 4) { rider.vy = 8; }
+}
+
+function spawn() {
+  // 障碍：石头或水坑；鱼：随机出现在可跳到的高度
+  var kind = Math.random() < 0.5 ? "rock" : "puddle";
+  if (kind === "rock") {
+    obstacles.push({ x: W + 20, kind: "rock", w: 26 + Math.random() * 14, h: 30 + Math.random() * 18 });
+  } else {
+    obstacles.push({ x: W + 20, kind: "puddle", w: 45 + Math.random() * 25, h: 12 });
+  }
+  if (Math.random() < 0.65) {
+    var fy = GROUND_Y - 55 - Math.random() * 90;
+    fishes.push({ x: W + 60 + Math.random() * 80, y: fy, taken: false });
+  }
+}
+
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+function riderBox() {
+  // 鹈鹕+车整体包围盒（比画面略小，留一点宽容）
+  return { x: rider.x - 28, y: rider.y - 62, w: 56, h: 62 };
+}
+function obstacleBox(o) {
+  if (o.kind === "rock") { return { x: o.x, y: GROUND_Y - o.h, w: o.w, h: o.h }; }
+  return { x: o.x, y: GROUND_Y - o.h, w: o.w, h: o.h };
+}
+function fishBox(f) { return { x: f.x - 14, y: f.y - 9, w: 28, h: 18 }; }
+
+function update(dt) {
+  frame++;
+  elapsed += dt;
+  speedMul = 1 + Math.floor(elapsed / 10) * 0.15;   // 每 10 秒 +0.15x
+  score += dt * 10;                                // 距离分：每秒 +10
+
+  // 跳跃物理
+  if (rider.jumping) {
+    rider.y += rider.vy;
+    rider.vy += GRAVITY;
+    if (rider.y >= GROUND_Y) { rider.y = GROUND_Y; rider.vy = 0; rider.jumping = false; }
+  }
+
+  // 生成
+  spawnTimer -= dt * 60;
+  if (spawnTimer <= 0) { spawn(); spawnTimer = 55 + Math.random() * 55; }
+
+  var sp = speed();
+  var i, o, f;
+  for (i = obstacles.length - 1; i >= 0; i--) {
+    o = obstacles[i]; o.x -= sp;
+    if (o.x + o.w < -20) { obstacles.splice(i, 1); continue; }
+    if (rectsOverlap(riderBox(), obstacleBox(o))) { gameOver(); return; }
+  }
+  for (i = fishes.length - 1; i >= 0; i--) {
+    f = fishes[i]; f.x -= sp;
+    if (f.x < -30) { fishes.splice(i, 1); continue; }
+    if (!f.taken && rectsOverlap(riderBox(), fishBox(f))) {
+      f.taken = true; fishEaten++; score += 10;    // 吃鱼 +10 分
+      fishes.splice(i, 1);
+    }
+  }
+  for (i = 0; i < clouds.length; i++) {
+    clouds[i].x -= sp * 0.3;
+    if (clouds[i].x < -80) { clouds[i].x = W + 60; clouds[i].y = 30 + Math.random() * 70; }
+  }
+}
+
+function gameOver() {
+  state = "over";
+  var finalScore = Math.floor(score);
+  if (finalScore > best) {
+    best = finalScore;
+    try { localStorage.setItem(BEST_KEY, String(best)); } catch (e) { /* 离线/隐私模式下忽略 */ }
+  }
+}
+
+function drawPelican() {
+  var x = rider.x, y = rider.y, bob = rider.jumping ? 0 : Math.sin(frame * 0.25) * 1.5;
+  ctx.save();
+  ctx.translate(x, y + bob);
+  // 自行车
+  ctx.strokeStyle = "#333"; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(-22, 0, 13, 0, Math.PI * 2); ctx.stroke();   // 后轮
+  ctx.beginPath(); ctx.arc(24, 0, 13, 0, Math.PI * 2); ctx.stroke();    // 前轮
+  ctx.beginPath();
+  ctx.moveTo(-22, 0); ctx.lineTo(0, -26); ctx.lineTo(24, 0); ctx.lineTo(2, 0); ctx.lineTo(-22, 0);
+  ctx.moveTo(0, -26); ctx.lineTo(8, -34); ctx.moveTo(8, -34); ctx.lineTo(24, -26);
+  ctx.stroke();
+  // 鹈鹕身体
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath(); ctx.ellipse(-4, -42, 24, 15, -0.15, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = "#c8c8c8"; ctx.lineWidth = 1.5; ctx.stroke();
+  // 翅膀
+  ctx.fillStyle = "#e8e8e8";
+  ctx.beginPath(); ctx.ellipse(-8, -40, 15, 8, -0.3, 0, Math.PI * 2); ctx.fill();
+  // 脖子 + 头
+  ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 9; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(14, -52); ctx.quadraticCurveTo(24, -66, 22, -74); ctx.stroke();
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath(); ctx.arc(24, -76, 9, 0, Math.PI * 2); ctx.fill();
+  // 长喙（鹈鹕标志）
+  ctx.fillStyle = "#ff9f1c";
+  ctx.beginPath(); ctx.moveTo(30, -79); ctx.lineTo(56, -73); ctx.lineTo(30, -70); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "#ffd166";
+  ctx.beginPath(); ctx.ellipse(40, -70, 10, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+  // 眼睛
+  ctx.fillStyle = "#222";
+  ctx.beginPath(); ctx.arc(26, -78, 2.2, 0, Math.PI * 2); ctx.fill();
+  // 腿蹬车
+  ctx.strokeStyle = "#ff9f1c"; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(-6, -30); ctx.lineTo(4, -8); ctx.stroke();
+  ctx.restore();
+}
+
+function draw() {
+  // 天空
+  ctx.fillStyle = "#bfe8f5";
+  ctx.fillRect(0, 0, W, H);
+  // 太阳
+  ctx.fillStyle = "#ffd93b";
+  ctx.beginPath(); ctx.arc(700, 60, 30, 0, Math.PI * 2); ctx.fill();
+  // 云
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  clouds.forEach(function (c) {
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, 18 * c.s, 0, Math.PI * 2);
+    ctx.arc(c.x + 20 * c.s, c.y + 4 * c.s, 14 * c.s, 0, Math.PI * 2);
+    ctx.arc(c.x - 20 * c.s, c.y + 5 * c.s, 13 * c.s, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  // 地面
+  ctx.fillStyle = "#8fce6e";
+  ctx.fillRect(0, GROUND_Y, W, H - GROUND_Y);
+  ctx.fillStyle = "#7cbf5c";
+  ctx.fillRect(0, GROUND_Y, W, 4);
+  // 鱼
+  fishes.forEach(function (f) {
+    ctx.fillStyle = "#ff7f50";
+    ctx.beginPath(); ctx.ellipse(f.x, f.y, 14, 8, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(f.x - 12, f.y); ctx.lineTo(f.x - 22, f.y - 8);
+    ctx.lineTo(f.x - 22, f.y + 8); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#222";
+    ctx.beginPath(); ctx.arc(f.x + 7, f.y - 2, 1.8, 0, Math.PI * 2); ctx.fill();
+  });
+  // 障碍
+  obstacles.forEach(function (o) {
+    if (o.kind === "rock") {
+      ctx.fillStyle = "#8d8d8d";
+      ctx.beginPath();
+      ctx.moveTo(o.x, GROUND_Y);
+      ctx.lineTo(o.x + o.w * 0.2, GROUND_Y - o.h);
+      ctx.lineTo(o.x + o.w * 0.7, GROUND_Y - o.h * 0.9);
+      ctx.lineTo(o.x + o.w, GROUND_Y);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = "#a9a9a9";
+      ctx.beginPath();
+      ctx.moveTo(o.x + o.w * 0.2, GROUND_Y - o.h);
+      ctx.lineTo(o.x + o.w * 0.45, GROUND_Y - o.h * 0.55);
+      ctx.lineTo(o.x + o.w * 0.7, GROUND_Y - o.h * 0.9);
+      ctx.closePath(); ctx.fill();
+    } else {
+      ctx.fillStyle = "#3aa7d6";
+      ctx.beginPath(); ctx.ellipse(o.x + o.w / 2, GROUND_Y - o.h / 2, o.w / 2, o.h / 2, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#7cc9e8";
+      ctx.beginPath(); ctx.ellipse(o.x + o.w / 2 - 8, GROUND_Y - o.h / 2 - 1, o.w / 5, 2.5, 0, 0, Math.PI * 2); ctx.fill();
+    }
+  });
+  drawPelican();
+
+  // 提示 / 结束画面
+  if (state === "ready") {
+    ctx.fillStyle = "rgba(28,61,77,0.75)";
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#fff"; ctx.textAlign = "center";
+    ctx.font = "bold 34px sans-serif";
+    ctx.fillText("鹈鹕骑车", W / 2, 160);
+    ctx.font = "18px sans-serif";
+    ctx.fillText("空格 / ↑ / 点击 / 触摸 跳起来，躲开石头和水坑", W / 2, 200);
+    ctx.fillText("吃鱼 +10 分，越骑越快", W / 2, 228);
+    ctx.fillText("按任意键开始", W / 2, 268);
+  } else if (state === "over") {
+    ctx.fillStyle = "rgba(28,61,77,0.75)";
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#fff"; ctx.textAlign = "center";
+    ctx.font = "bold 34px sans-serif";
+    ctx.fillText("撞上啦！", W / 2, 150);
+    ctx.font = "20px sans-serif";
+    ctx.fillText("本局分数 " + Math.floor(score) + "（吃鱼 " + fishEaten + " 条）", W / 2, 195);
+    ctx.fillText("最高分 " + best, W / 2, 228);
+    ctx.fillText("按 R 或点击重新开始", W / 2, 268);
+  }
+}
+
+function renderHUD() {
+  scoreEl.textContent = "分数 " + Math.floor(score);
+  speedEl.textContent = "速度 " + speedMul.toFixed(1) + "x";
+  bestEl.textContent = "最高分 " + best;
+}
+
+var last = null;
+function loop(ts) {
+  if (last === null) { last = ts; }
+  var dt = Math.min((ts - last) / 1000, 0.05);
+  last = ts;
+  if (state === "playing") { update(dt); }
+  draw();
+  renderHUD();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// 输入：键盘 + 点击/触摸 + 按钮
+window.addEventListener("keydown", function (e) {
+  if (e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") { e.preventDefault(); jump(); }
+  else if (e.code === "ArrowDown" || e.code === "KeyS") { e.preventDefault(); fastDrop(); }
+  else if (e.code === "KeyR") { reset(); }
+});
+canvas.addEventListener("pointerdown", function (e) { e.preventDefault(); jump(); });
+document.getElementById("jumpBtn").addEventListener("click", jump);
+document.getElementById("restartBtn").addEventListener("click", function () { reset(); });
+</script>
+</body>
+</html>
