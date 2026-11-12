@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>鹈鹕开车 · Pelican Drive</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #1c3d4d; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; }
+  #wrap { max-width: 860px; margin: 0 auto; padding: 12px; text-align: center; }
+  h1 { margin: 6px 0 2px; font-size: 26px; color: #fff; }
+  p.sub { margin: 0 0 10px; color: #bcd8e6; font-size: 14px; }
+  #drive { display: block; width: 100%; max-width: 800px; height: auto; margin: 0 auto;
+          background: #bfe8f5; border: 3px solid #0d2733; border-radius: 10px; }
+  #hud { display: flex; justify-content: space-between; max-width: 800px; margin: 8px auto 0;
+         font-size: 16px; font-weight: bold; color: #fff; }
+  #bar { max-width: 800px; height: 6px; margin: 6px auto 0; background: #33566a; border-radius: 3px; overflow: hidden; }
+  #barFill { height: 100%; width: 0%; background: #ff9f1c; }
+  #hint { max-width: 800px; margin: 8px auto 0; font-size: 14px; color: #bcd8e6; line-height: 1.6; }
+  #btns { margin-top: 10px; }
+  button { font-size: 16px; padding: 8px 18px; margin: 0 6px; border-radius: 8px;
+           border: 2px solid #0d2733; background: #fff; color: #1c3d4d; cursor: pointer; }
+  button:active { background: #dff3fb; }
+  #note { max-width: 800px; margin: 10px auto 0; font-size: 12px; color: #8fb0c0; line-height: 1.5; text-align: left; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>鹈鹕开车</h1>
+  <p class="sub">30 秒动画 · 乡间公路 → 城市街道 → 海岸日落</p>
+  <canvas id="drive" width="800" height="400"></canvas>
+  <div id="hud"><span id="clock">0.0s / 30s</span><span id="shot">镜头 1 · 乡间公路</span><span id="snd">声音：开</span></div>
+  <div id="bar"><div id="barFill"></div></div>
+  <div id="hint">空格 = 播放 / 暂停；R = 重播；M = 静音。</div>
+  <div id="btns">
+    <button id="playBtn" type="button">播放</button>
+    <button id="replayBtn" type="button">重播 (R)</button>
+    <button id="muteBtn" type="button">静音 (M)</button>
+  </div>
+  <div id="note">说明：鹈鹕造型沿用鹈鹕骑车游戏（白羽、橙喙 #ff9f1c、喉囊 #ffd166）；骑车版主干无围巾，开车版按 MI #79 题干新增蓝围巾（飘动），非同款复刻。单文件、零外部依赖、离线可播。</div>
+</div>
+<script>
+"use strict";
+/* 鹈鹕开车 30 秒动画（MI #79，变体 A：工厂自己做）— 单文件、零外部依赖、离线可播。
+   Canvas 2D，800×400；时间轴为绝对时间 t=(now-start)/1000，时长 30 秒，可循环。
+   造型常量复用鹈鹕骑车游戏 pelican-game/index.html 的 drawPelican()。 */
+var canvas = document.getElementById("drive");
+var ctx = canvas.getContext("2d");
+var W = canvas.width, H = canvas.height;
+var DUR = 30;                 // 总时长（秒），DoD 硬指标 30 ± 1
+var FADE = 0.5;               // 镜头切换交叉淡化（秒）
+var LOOP_FADE = 0.3;          // 循环接缝淡入淡出到黑（秒）
+var CAR_X = 230;              // 车在画面中的固定 x（左约 1/3）
+var MUTE_KEY = "pelican-drive-muted";
+
+/* ---------- 通用工具 ---------- */
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function lerp(a, b, k) { return a + (b - a) * k; }
+function smoothstep(a, b, x) { var k = clamp((x - a) / (b - a), 0, 1); return k * k * (3 - 2 * k); }
+function mod(n, m) { return ((n % m) + m) % m; }
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    var t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function css(c) { return "rgb(" + (c[0] | 0) + "," + (c[1] | 0) + "," + (c[2] | 0) + ")"; }
+function mix3(a, b, k) { return [lerp(a[0], b[0], k), lerp(a[1], b[1], k), lerp(a[2], b[2], k)]; }
+function rgba(c, a) { return "rgba(" + (c[0] | 0) + "," + (c[1] | 0) + "," + (c[2] | 0) + "," + a + ")"; }
+function rr(g, x, y, w, h, r) {  // 圆角矩形路径（兼容无 ctx.roundRect 的浏览器）
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+
+/* ---------- 时间轴：速度剖面与滚动距离（确定性，与帧率无关） ---------- */
+function speedProfile(t) {
+  if (t < 10) return 130;                       // 镜头 1：乡间公路基准速度
+  if (t < 20) {                                  // 镜头 2：1.5 倍基准，红灯前减速
+    var d = (t - 12) / 0.8;
+    return 195 * (1 - 0.45 * Math.exp(-d * d));
+  }
+  if (t < 22) {                                  // 镜头 3：海岸公路减速停车
+    var k = (t - 20) / 2;
+    return 100 * (1 - k * k * (3 - 2 * k));
+  }
+  return 0;                                      // 停稳后不再滚动
+}
+var SCROLL = (function () {
+  var arr = [], s = 0, i;
+  for (i = 0; i <= 3000; i++) { arr[i] = s; s += speedProfile(i * 0.01) * 0.01; }
+  return arr;
+})();
+function scrollAt(t) {
+  var x = clamp(t, 0, DUR) * 100, i = Math.floor(x), f = x - i;
+  if (i >= 3000) return SCROLL[3000];
+  return SCROLL[i] + (SCROLL[i + 1] - SCROLL[i]) * f;
+}
+function shotAt(t) { return t < 10 ? 1 : t < 20 ? 2 : 3; }
+function shotName(s) { return s === 1 ? "镜头 1 · 乡间公路" : s === 2 ? "镜头 2 · 城市街道" : "镜头 3 · 海岸日落"; }
+function zoomAt(t) {  // 镜头 2 约第 16 秒转弯推近：1.0 → 1.08 → 1.0
+  var b = smoothstep(15.5, 16, t) * (1 - smoothstep(16, 17, t));
+  return 1 + 0.08 * b;
+}
+function tiltAt(t) {  // 转弯时车身向弯内倾斜（最大约 4°）
+  var b = smoothstep(15.5, 16, t) * (1 - smoothstep(16, 17, t));
+  return -0.07 * b;
+}
+function lightState(t) {  // 镜头 2 红绿灯：第 12 秒红→黄（0.5 秒）→绿
+  if (t < 12) return "red";
+  if (t < 12.5) return "yellow";
+  return "green";
+}
+var TL_WORLD_X = 620 + scrollAt(12);  // 红绿灯的世界坐标：第 12 秒正好在画面 x=620
+
+/* ---------- 镜头 3 灯光关键帧（白天 → 金黄 → 紫红） ---------- */
+var LIGHT_KEYS = [
+  { t: 20,   top: [127, 184, 216], bot: [216, 238, 247], sea: [58, 159, 208],  sun: [255, 217, 59],  sunY: 95 },
+  { t: 22.5, top: [247, 183, 51],  bot: [253, 228, 156], sea: [232, 161, 59],  sun: [255, 176, 58],  sunY: 150 },
+  { t: 27,   top: [138, 75, 143],  bot: [232, 93, 117],  sea: [154, 75, 122],  sun: [255, 107, 74],  sunY: 205 },
+  { t: 30,   top: [61, 43, 92],     bot: [201, 79, 109],  sea: [91, 58, 110],   sun: [255, 90, 60],   sunY: 224 }
+];
+function lightingAt(t) {
+  var i, a, b, k;
+  if (t <= LIGHT_KEYS[0].t) { a = LIGHT_KEYS[0]; b = LIGHT_KEYS[0]; k = 0; }
+  else if (t >= LIGHT_KEYS[3].t) { a = LIGHT_KEYS[3]; b = LIGHT_KEYS[3]; k = 0; }
+  else {
+    for (i = 0; i < 3; i++) {
+      if (t >= LIGHT_KEYS[i].t && t < LIGHT_KEYS[i + 1].t) {
+        a = LIGHT_KEYS[i]; b = LIGHT_KEYS[i + 1];
+        k = smoothstep(a.t, b.t, t);
+        break;
+      }
+    }
+  }
+  return {
+    top: mix3(a.top, b.top, k), bot: mix3(a.bot, b.bot, k),
+    sea: mix3(a.sea, b.sea, k), sun: mix3(a.sun, b.sun, k),
+    sunY: lerp(a.sunY, b.sunY, k)
+  };
+}
+
+/* ---------- 造型常量（复用鹈鹕骑车游戏 drawPelican） ---------- */
+var PEL = {
+  white: "#ffffff", wing: "#e8e8e8", edge: "#c8c8c8",
+  beak: "#ff9f1c", pouch: "#ffd166", eye: "#222", leg: "#ff9f1c",
+  bodyRX: 24, bodyRY: 15, headR: 9,
+  scarf: "#2f6fd6", scarfDark: "#2458ad"   // 蓝围巾：开车版按题干新增（骑车版主干无围巾）
+};
+
+/* 鹈鹕驾驶员：三镜头共用同一函数，姿态参数化。
+   o = { pose:'drive'|'stand'|'walk'|'sit', headTurn:0..1, wave:0..1,
+         walkPhase:rad, flutter:rad, droop:bool }；原点为座位点。 */
+function drawPelicanDriver(g, x, y, o) {
+  o = o || {};
+  var pose = o.pose || "drive";
+  var ht = o.headTurn || 0;
+  g.save();
+  g.translate(x, y);
+  // 腿（按姿态）
+  g.strokeStyle = PEL.leg; g.lineWidth = 4; g.lineCap = "round";
+  if (pose === "walk") {
+    var s1 = Math.sin(o.walkPhase || 0), s2 = Math.sin((o.walkPhase || 0) + Math.PI);
+    g.beginPath(); g.moveTo(-6, -26); g.lineTo(-6 + s1 * 10, 0); g.stroke();
+    g.beginPath(); g.moveTo(2, -26); g.lineTo(2 + s2 * 10, 0); g.stroke();
+  } else if (pose === "sit") {
+    g.beginPath(); g.moveTo(-8, -26); g.lineTo(8, -14); g.stroke();
+    g.beginPath(); g.moveTo(-2, -26); g.lineTo(14, -16); g.stroke();
+  } else {  // drive / stand：一腿踩踏板（drive）或直立（stand）
+    g.beginPath(); g.moveTo(-4, -28); g.lineTo(pose === "stand" ? -4 : 10, pose === "stand" ? 0 : -8); g.stroke();
+  }
+  // 身体（白羽椭圆，与骑车游戏同尺寸）
+  g.fillStyle = PEL.white;
+  g.beginPath(); g.ellipse(-2, -38, PEL.bodyRX, PEL.bodyRY, -0.1, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = PEL.edge; g.lineWidth = 1.5; g.stroke();
+  // 翅膀：drive 伸向方向盘；wave 抬起挥动；walk/sit 贴身
+  g.fillStyle = PEL.wing;
+  if (o.wave > 0.05) {
+    g.save();
+    g.translate(-8, -38); g.rotate(-(0.3 + o.wave * 1.0));
+    g.beginPath(); g.ellipse(0, -8, 15, 7, 0, 0, Math.PI * 2); g.fill();
+    g.restore();
+  } else if (pose === "drive") {
+    g.save();
+    g.translate(-8, -38); g.rotate(-0.35);
+    g.beginPath(); g.ellipse(8, -2, 15, 7, 0, 0, Math.PI * 2); g.fill();
+    g.restore();
+  } else {
+    g.beginPath(); g.ellipse(-8, -36, 15, 8, -0.3, 0, Math.PI * 2); g.fill();
+  }
+  // 蓝围巾：颈部围带 + 两条飘带（drive/walk 飘动；sit 垂落）
+  var fl = o.flutter || 0;
+  g.save();
+  g.translate(12, -56); g.rotate(-0.4);
+  g.fillStyle = PEL.scarf; rr(g, -9, -5, 19, 10, 5); g.fill();
+  g.restore();
+  g.strokeStyle = PEL.scarf; g.lineWidth = 6; g.lineCap = "round";
+  if (o.droop) {
+    g.beginPath(); g.moveTo(10, -54); g.quadraticCurveTo(16, -40, 14, -28); g.stroke();
+    g.strokeStyle = PEL.scarfDark;
+    g.beginPath(); g.moveTo(14, -53); g.quadraticCurveTo(20, -42, 18, -30); g.stroke();
+  } else {
+    g.beginPath(); g.moveTo(6, -56);
+    g.quadraticCurveTo(-14, -58 + fl * 8, -34, -50 + fl * 10); g.stroke();
+    g.strokeStyle = PEL.scarfDark;
+    g.beginPath(); g.moveTo(8, -52);
+    g.quadraticCurveTo(-10, -50 + fl * 6, -26, -42 + fl * 8); g.stroke();
+  }
+  // 脖子 + 头（回头时头向左转、喙缩短，表看向镜头）
+  var hx = 24 - 4 * ht, hy = -72;
+  g.strokeStyle = PEL.white; g.lineWidth = 9; g.lineCap = "round";
+  g.beginPath(); g.moveTo(14, -48);
+  g.quadraticCurveTo(24 - 4 * ht, -62, hx - 2, hy + 2); g.stroke();
+  g.fillStyle = PEL.white;
+  g.beginPath(); g.arc(hx, hy, PEL.headR, 0, Math.PI * 2); g.fill();
+  // 长喙 + 喉囊（橙喙 #ff9f1c，喉囊 #ffd166）
+  var bl = 26 * (1 - 0.5 * ht);
+  g.fillStyle = PEL.beak;
+  g.beginPath();
+  g.moveTo(hx + 6, hy - 3); g.lineTo(hx + 6 + bl, hy + 3); g.lineTo(hx + 6, hy + 6);
+  g.closePath(); g.fill();
+  g.fillStyle = PEL.pouch;
+  g.beginPath(); g.ellipse(hx + 6 + bl * 0.55, hy + 3, 10, 3.5, 0, 0, Math.PI * 2); g.fill();
+  // 眼睛
+  g.fillStyle = PEL.eye;
+  g.beginPath(); g.arc(hx + 2, hy - 2, 2.2, 0, Math.PI * 2); g.fill();
+  g.restore();
+}
+
+/* 红色小车（敞篷）：原点为车轮接地点。o = { wheelAngle, bob, tilt, doorOpen, shadow } */
+function drawCar(g, x, groundY, o) {
+  o = o || {};
+  var wa = o.wheelAngle || 0, bob = o.bob || 0;
+  g.save();
+  g.translate(x, groundY + bob);
+  g.rotate(o.tilt || 0);
+  // 车影（镜头 1 长影：向左拉长）
+  g.fillStyle = "rgba(0,0,0,0.28)";
+  g.beginPath();
+  g.ellipse(o.shadowX || 0, 3, (o.shadowRX || 62), 5, 0, 0, Math.PI * 2); g.fill();
+  // 车轮（辐条随滚动旋转）
+  var wx, k, a;
+  [-32, 32].forEach(function (cx) {
+    g.fillStyle = "#222";
+    g.beginPath(); g.arc(cx, 0, 14, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = "#999"; g.lineWidth = 2;
+    for (k = 0; k < 3; k++) {
+      a = wa + k * Math.PI * 2 / 3;
+      g.beginPath(); g.moveTo(cx, 0); g.lineTo(cx + Math.cos(a) * 11, Math.sin(a) * 11); g.stroke();
+    }
+    g.fillStyle = "#ddd";
+    g.beginPath(); g.arc(cx, 0, 5, 0, Math.PI * 2); g.fill();
+  });
+  // 车身
+  g.fillStyle = "#e23b3b"; rr(g, -55, -38, 110, 34, 10); g.fill();
+  g.fillStyle = "#c92f2f"; rr(g, -55, -14, 110, 10, 5); g.fill();
+  // 挡风玻璃（浅蓝反光 + 白色斜亮带）
+  g.fillStyle = "#bfe8f5";
+  g.beginPath();
+  g.moveTo(18, -38); g.lineTo(38, -38); g.lineTo(30, -56); g.lineTo(12, -56);
+  g.closePath(); g.fill();
+  g.fillStyle = "rgba(255,255,255,0.7)";
+  g.beginPath();
+  g.moveTo(24, -38); g.lineTo(30, -38); g.lineTo(24, -56); g.lineTo(19, -56);
+  g.closePath(); g.fill();
+  // 方向盘
+  g.strokeStyle = "#333"; g.lineWidth = 3;
+  g.beginPath(); g.arc(20, -26, 7, 0, Math.PI * 2); g.stroke();
+  g.beginPath(); g.moveTo(20, -26); g.lineTo(20, -19); g.stroke();
+  // 车灯
+  g.fillStyle = "#ffe27a";
+  g.beginPath(); g.arc(52, -28, 4, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "#ff6b6b";
+  g.beginPath(); g.arc(-54, -28, 3, 0, Math.PI * 2); g.fill();
+  // 车门（镜头 3 下车示意）
+  if (o.doorOpen > 0.02) {
+    g.save();
+    g.translate(-10, -36); g.rotate(-0.55 * o.doorOpen);
+    g.fillStyle = "#c92f2f"; rr(g, 0, 0, 34, 30, 4); g.fill();
+    g.restore();
+  }
+  g.restore();
+}
+
+/* ---------- 镜头 1：乡间公路（0–10 秒，清晨暖光） ---------- */
+var FLOWER_COLORS = ["#ff6b9d", "#ffd166", "#c77dff"];
+var flowerRand = mulberry32(79);
+var FLOWERS = [];  // 固定种子：循环播放逐帧一致
+(function () { var i; for (i = 0; i < 12; i++) FLOWERS.push({ off: i * 130 + 40, c: FLOWER_COLORS[i % 3], h: 8 + flowerRand() * 6 }); })();
+
+function drawCloud(g, x, y, s, alpha) {
+  g.fillStyle = "rgba(255,255,255," + alpha + ")";
+  g.beginPath();
+  g.arc(x, y, 18 * s, 0, Math.PI * 2);
+  g.arc(x + 20 * s, y + 4 * s, 14 * s, 0, Math.PI * 2);
+  g.arc(x - 20 * s, y + 5 * s, 13 * s, 0, Math.PI * 2);
+  g.fill();
+}
+
+function renderShot1(g, t) {
+  var s = scrollAt(t), i, x;
+  // 天空（淡金渐变）+ 低角度太阳 + 暖光
+  var sky = g.createLinearGradient(0, 0, 0, 330);
+  sky.addColorStop(0, "#ffe9b0"); sky.addColorStop(1, "#fff3cf");
+  g.fillStyle = sky; g.fillRect(0, 0, W, 330);
+  var glow = g.createRadialGradient(680, 70, 5, 680, 70, 80);
+  glow.addColorStop(0, "rgba(255,217,59,0.8)"); glow.addColorStop(1, "rgba(255,217,59,0)");
+  g.fillStyle = glow; g.fillRect(600, -10, 160, 160);
+  g.fillStyle = "#ffd93b";
+  g.beginPath(); g.arc(680, 70, 28, 0, Math.PI * 2); g.fill();
+  for (i = 0; i < 3; i++) drawCloud(g, mod(120 + i * 300 - s * 0.05, 900) - 50, 50 + i * 22, 0.8 + i * 0.2, 0.9);
+  // 远山（0.2x，两层剪影 + 晨雾带）
+  g.fillStyle = "#a8c4d4";
+  g.beginPath(); g.moveTo(0, 330);
+  for (x = 0; x <= W; x += 40) g.lineTo(x, 296 - 22 * Math.sin((x + s * 0.2) * 0.011) - 10 * Math.sin((x + s * 0.2) * 0.023 + 2));
+  g.lineTo(W, 330); g.closePath(); g.fill();
+  g.fillStyle = "#8fb0c4";
+  g.beginPath(); g.moveTo(0, 330);
+  for (x = 0; x <= W; x += 40) g.lineTo(x, 312 - 16 * Math.sin((x + s * 0.2) * 0.017 + 1));
+  g.lineTo(W, 330); g.closePath(); g.fill();
+  g.fillStyle = "rgba(255,255,255,0.22)"; g.fillRect(0, 288, W, 24);
+  // 中树（0.5x，两种树形）
+  for (i = 0; i < 7; i++) {
+    x = mod(i * 160 - s * 0.5, 960) - 80;
+    if (i % 2 === 0) {  // 圆冠树
+      g.fillStyle = "#7a5a3a"; g.fillRect(x - 3, 296, 6, 34);
+      g.fillStyle = "#5da85a";
+      g.beginPath(); g.arc(x, 282, 20, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.arc(x - 14, 292, 13, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.arc(x + 14, 292, 13, 0, Math.PI * 2); g.fill();
+    } else {  // 松树
+      g.fillStyle = "#6a4a2a"; g.fillRect(x - 3, 302, 6, 28);
+      g.fillStyle = "#3f8f4f";
+      g.beginPath(); g.moveTo(x, 252); g.lineTo(x - 20, 296); g.lineTo(x + 20, 296); g.closePath(); g.fill();
+      g.beginPath(); g.moveTo(x, 266); g.lineTo(x - 24, 312); g.lineTo(x + 24, 312); g.closePath(); g.fill();
+    }
+  }
+  // 草地带
+  g.fillStyle = "#8fce6e"; g.fillRect(0, 322, W, 8);
+  // 篱笆（1.0x，一段一段掠过）
+  g.strokeStyle = "#a9805a"; g.lineWidth = 3;
+  for (i = 0; i < 10; i++) {
+    x = mod(i * 95 - s, 950) - 75;
+    g.beginPath(); g.moveTo(x, 302); g.lineTo(x + 95, 302); g.stroke();
+    g.beginPath(); g.moveTo(x, 314); g.lineTo(x + 95, 314); g.stroke();
+    g.fillStyle = "#8a6a45"; g.fillRect(x - 3, 296, 6, 30);
+  }
+  // 近草（1.0x）+ 野花（三种颜色，固定种子）
+  g.strokeStyle = "#5da85a"; g.lineWidth = 2;
+  for (i = 0; i < 16; i++) {
+    x = mod(i * 55 - s, 880) - 40;
+    g.beginPath(); g.moveTo(x, 330); g.lineTo(x - 4, 320); g.moveTo(x, 330); g.lineTo(x + 4, 319); g.stroke();
+  }
+  FLOWERS.forEach(function (f) {
+    x = mod(f.off - s, 1560) - 40;
+    g.strokeStyle = "#4c9a4f"; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(x, 330); g.lineTo(x, 330 - f.h); g.stroke();
+    g.fillStyle = f.c;
+    g.beginPath(); g.arc(x, 330 - f.h - 3, 4, 0, Math.PI * 2); g.fill();
+    g.fillStyle = "#fff";
+    g.beginPath(); g.arc(x, 330 - f.h - 3, 1.5, 0, Math.PI * 2); g.fill();
+  });
+  // 公路（灰底 + 黄色虚线，1.0x）
+  g.fillStyle = "#5d5d5d"; g.fillRect(0, 330, W, 70);
+  g.fillStyle = "rgba(255,255,255,0.6)"; g.fillRect(0, 336, W, 3);
+  g.fillStyle = "#ffd93b";
+  for (x = mod(-s, 90) - 90; x < W; x += 90) g.fillRect(x, 364, 45, 5);
+  // 排气管小烟（确定性：每 0.5 秒一 puff）
+  var k, age, px, py;
+  for (k = 0; k < 3; k++) {
+    age = mod(t * 2 + k / 3, 1);
+    px = CAR_X - 62 - age * 50; py = 322 - age * 14;
+    g.fillStyle = "rgba(200,200,200," + (0.35 * (1 - age)).toFixed(3) + ")";
+    g.beginPath(); g.arc(px, py, 4 + age * 6, 0, Math.PI * 2); g.fill();
+  }
+  // 红色小车 + 鹈鹕驾驶员
+  var bob = Math.sin(t * 6) * 2;
+  drawCar(g, CAR_X, 330, { wheelAngle: s / 14, bob: bob, tilt: Math.sin(t * 6 + 1) * 0.01, shadowX: -8, shadowRX: 78 });
+  var headTurn = smoothstep(8, 8.3, t) * (1 - smoothstep(9.2, 9.5, t));  // 第 8 秒回头挥翅
+  var wave = headTurn * (0.5 + 0.5 * Math.sin((t - 8) / 1.5 * 2 * Math.PI * 2));
+  drawPelicanDriver(g, CAR_X - 5, 320, {
+    pose: "drive", headTurn: headTurn, wave: wave, flutter: Math.sin(t * 5) * 0.25 + 0.2
+  });
+  // 清晨暖光叠加
+  g.fillStyle = "rgba(255,190,90,0.10)"; g.fillRect(0, 0, W, H);
+}
+
+/* ---------- 镜头 2：城市街道（10–20 秒，正午） ---------- */
+var BLD_COLORS = ["#b8a89a", "#9ab8c9", "#c9b8a8", "#a8b89a", "#c9a8b8"];
+var SIGNS = ["SHOP", "CAFÉ", "24H", "HOTEL", "BOOKS"];
+var bldRand = mulberry32(2026);
+var BUILDINGS = [];
+(function () { var i; for (i = 0; i < 6; i++) BUILDINGS.push({ w: 120 + bldRand() * 60, h: 120 + bldRand() * 80, c: BLD_COLORS[i % 5], sign: SIGNS[i % 5] }); })();
+
+function drawSimpleCar(g, x, groundY, color, flip) {
+  g.save();
+  g.translate(x, groundY); if (flip) g.scale(-1, 1);
+  g.fillStyle = color; rr(g, -42, -26, 84, 22, 8); g.fill();
+  g.fillStyle = "#bfe8f5"; rr(g, -26, -40, 48, 16, 6); g.fill();
+  g.fillStyle = "#222";
+  g.beginPath(); g.arc(-24, 0, 10, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.arc(24, 0, 10, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "#ddd";
+  g.beginPath(); g.arc(-24, 0, 4, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.arc(24, 0, 4, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "#ffe27a";
+  g.beginPath(); g.arc(41, -16, 3, 0, Math.PI * 2); g.fill();
+  g.restore();
+}
+
+function drawPedestrian(g, x, y, phase, color) {
+  var sw = Math.sin(phase) * 6;
+  g.save(); g.translate(x, y);
+  g.fillStyle = "#333";
+  g.beginPath(); g.arc(0, -34, 5, 0, Math.PI * 2); g.fill();           // 头
+  g.strokeStyle = color; g.lineWidth = 5; g.lineCap = "round";
+  g.beginPath(); g.moveTo(0, -28); g.lineTo(0, -12); g.stroke();       // 身
+  g.beginPath(); g.moveTo(0, -12); g.lineTo(-4 + sw, 0); g.stroke();   // 腿
+  g.beginPath(); g.moveTo(0, -12); g.lineTo(4 - sw, 0); g.stroke();
+  g.beginPath(); g.moveTo(0, -24); g.lineTo(-6 - sw * 0.5, -14); g.stroke();  // 臂
+  g.beginPath(); g.moveTo(0, -24); g.lineTo(6 + sw * 0.5, -14); g.stroke();
+  g.restore();
+}
+
+function renderShot2(g, t) {
+  var s = scrollAt(t), i, x, j;
+  // 正午天空（高亮、少暖色）
+  var sky = g.createLinearGradient(0, 0, 0, 300);
+  sky.addColorStop(0, "#aee3f5"); sky.addColorStop(1, "#eaf9ff");
+  g.fillStyle = sky; g.fillRect(0, 0, W, 300);
+  g.fillStyle = "#fff3a0";
+  g.beginPath(); g.arc(720, 55, 22, 0, Math.PI * 2); g.fill();
+  for (i = 0; i < 2; i++) drawCloud(g, mod(200 + i * 420 - s * 0.08, 900) - 50, 60 + i * 30, 0.9, 0.85);
+  // 楼群（0.5x）：楼体 + 窗格 + 斜向反光带 + 招牌
+  for (i = 0; i < 6; i++) {
+    var b = BUILDINGS[i];
+    x = mod(i * 240 - s * 0.5, 1440) - 240;
+    g.fillStyle = b.c; g.fillRect(x, 300 - b.h, b.w, b.h);
+    g.fillStyle = "#cfe8f5";
+    var r, c;
+    for (r = 0; r < 5; r++) for (c = 0; c < 4; c++) {
+      if (c * 22 + 14 < b.w - 8) g.fillRect(x + 10 + c * 22, 300 - b.h + 14 + r * 20, 12, 12);
+    }
+    g.fillStyle = "rgba(255,255,255,0.45)";  // 橱窗反光斜带
+    g.beginPath();
+    g.moveTo(x + 20, 300); g.lineTo(x + 60, 300); g.lineTo(x + 30, 300 - b.h); g.lineTo(x + 10, 300 - b.h);
+    g.closePath(); g.fill();
+    g.fillStyle = "#1c3d4d"; g.fillRect(x + 8, 300 - b.h - 24, b.w - 16, 20);
+    g.fillStyle = "#fff"; g.font = "bold 13px sans-serif"; g.textAlign = "center";
+    g.fillText(b.sign, x + b.w / 2, 300 - b.h - 9);
+  }
+  // 人行道 + 路灯
+  g.fillStyle = "#b8b0a4"; g.fillRect(0, 300, W, 30);
+  g.fillStyle = "#8a8278"; g.fillRect(0, 328, W, 2);
+  for (i = 0; i < 4; i++) {
+    x = mod(i * 260 - s, 1040) - 120;
+    g.fillStyle = "#555"; g.fillRect(x, 250, 5, 50);
+    g.fillStyle = "#ffe27a";
+    g.beginPath(); g.arc(x + 2, 248, 6, 0, Math.PI * 2); g.fill();
+  }
+  // 路面 + 斑马线（1.0x）
+  g.fillStyle = "#555"; g.fillRect(0, 330, W, 70);
+  g.fillStyle = "rgba(255,255,255,0.85)";
+  for (x = mod(-s, 320) - 320; x < W; x += 320) g.fillRect(x, 340, 26, 50);
+  // 红绿灯（世界坐标固定；第 12 秒红→黄→绿）
+  var sx = TL_WORLD_X - s;
+  if (sx > -40 && sx < 840) {
+    g.fillStyle = "#333"; g.fillRect(sx, 220, 6, 110);
+    g.fillStyle = "#222"; rr(g, sx - 12, 196, 30, 52, 6); g.fill();
+    var ls = lightState(t);
+    g.fillStyle = ls === "red" ? "#ff4444" : "#551111";
+    g.beginPath(); g.arc(sx + 3, 208, 6, 0, Math.PI * 2); g.fill();
+    g.fillStyle = ls === "yellow" ? "#ffcc00" : "#554411";
+    g.beginPath(); g.arc(sx + 3, 222, 6, 0, Math.PI * 2); g.fill();
+    g.fillStyle = ls === "green" ? "#44dd44" : "#114411";
+    g.beginPath(); g.arc(sx + 3, 236, 6, 0, Math.PI * 2); g.fill();
+  }
+  // 对向车流（2 辆，不同颜色，相对速度更快）
+  for (j = 0; j < 2; j++) {
+    x = mod(300 + j * 430 - s * 1.6, 1000) - 100;
+    drawSimpleCar(g, x, 330, j === 0 ? "#4a90d9" : "#e8a13b", true);
+  }
+  // 同向超车（约 11 秒从后方出现，14 秒超过主车，16 秒出画）
+  if (t > 11 && t < 16.5) {
+    var ox = 60 + (t - 11) * 170;
+    if (ox < 850) drawSimpleCar(g, ox, 348, "#7a5fd0", false);
+  }
+  // 行人过斑马线（世界锚定，与车流无穿透）
+  var s11 = scrollAt(11.5);
+  for (j = 0; j < 2; j++) {
+    var px = (620 + j * 80) - (s - s11);
+    var prog = clamp((t - 11.5) / 5, 0, 1);
+    if (t > 11.5 && px > -20 && px < 820) {
+      drawPedestrian(g, px, 338 + prog * 52, t * 6 + j * 2, j === 0 ? "#d94a6b" : "#3aa77a");
+    }
+  }
+  // 主车：约第 16 秒转弯倾斜 + 镜头推近由合成层处理
+  var bob = Math.sin(t * 8) * 1.5;
+  drawCar(g, CAR_X, 330, { wheelAngle: s / 14, bob: bob, tilt: tiltAt(t) });
+  drawPelicanDriver(g, CAR_X - 5, 320, {
+    pose: "drive", flutter: Math.sin(t * 7) * 0.3 + 0.25
+  });
+}
+
+/* ---------- 镜头 3：海岸日落（20–30 秒，黄昏） ---------- */
+function renderShot3(g, t) {
+  var s = scrollAt(t), i, x;
+  var L = lightingAt(t);
+  // 天空（随灯光关键帧变色）+ 沉入海平面的太阳
+  var sky = g.createLinearGradient(0, 0, 0, 250);
+  sky.addColorStop(0, css(L.top)); sky.addColorStop(1, css(L.bot));
+  g.fillStyle = sky; g.fillRect(0, 0, W, 250);
+  var glow = g.createRadialGradient(620, L.sunY, 5, 620, L.sunY, 90);
+  glow.addColorStop(0, rgba(L.sun, 0.7)); glow.addColorStop(1, rgba(L.sun, 0));
+  g.fillStyle = glow; g.fillRect(530, L.sunY - 90, 180, 180);
+  g.fillStyle = css(L.sun);
+  g.beginPath(); g.arc(620, L.sunY, 26, 0, Math.PI * 2); g.fill();
+  // 云（随天色变色）
+  for (i = 0; i < 2; i++) drawCloud(g, mod(150 + i * 380 + t * 6, 900) - 50, 70 + i * 40, 1.0, 0.55);
+  // 海鸥剪影
+  g.strokeStyle = "#333"; g.lineWidth = 2;
+  for (i = 0; i < 2; i++) {
+    x = mod(150 + t * 45 + i * 300, 900) - 50;
+    var gy = 90 + Math.sin(t * 0.8 + i) * 12, flap = Math.sin(t * 4 + i) * 4;
+    g.beginPath();
+    g.moveTo(x - 10, gy + flap); g.quadraticCurveTo(x, gy - 6, x + 10, gy + flap);
+    g.stroke();
+  }
+  // 海面 + 太阳倒影 + 两层海浪
+  g.fillStyle = css(L.sea); g.fillRect(0, 250, W, 80);
+  g.fillStyle = rgba(L.sun, 0.25);
+  for (i = 0; i < 8; i++) {
+    g.beginPath();
+    g.ellipse(620, 258 + i * 8, 26 - i * 2, 2.5, 0, 0, Math.PI * 2); g.fill();
+  }
+  g.strokeStyle = "rgba(255,255,255,0.5)"; g.lineWidth = 2;
+  g.beginPath();
+  for (x = 0; x <= W; x += 16) { var y1 = 272 + Math.sin(x * 0.02 + t * 1.1) * 3; if (x === 0) g.moveTo(x, y1); else g.lineTo(x, y1); }
+  g.stroke();
+  g.strokeStyle = "rgba(255,255,255,0.65)"; g.lineWidth = 3;
+  g.beginPath();
+  for (x = 0; x <= W; x += 16) { var y2 = 305 + Math.sin(x * 0.016 + t * 1.7) * 4; if (x === 0) g.moveTo(x, y2); else g.lineTo(x, y2); }
+  g.stroke();
+  // 沙滩 + 海岸公路
+  g.fillStyle = "#e8d8a8"; g.fillRect(0, 330, W, 25);
+  g.fillStyle = "#5d5d5d"; g.fillRect(0, 355, W, 45);
+  g.fillStyle = "#ffd93b";
+  for (x = mod(-s, 90) - 90; x < W; x += 90) g.fillRect(x, 376, 45, 5);
+  // 礁石 + 浪花拍打
+  g.fillStyle = "#4a4a55";
+  g.beginPath();
+  g.moveTo(545, 362); g.lineTo(575, 332); g.lineTo(610, 328); g.lineTo(645, 362);
+  g.closePath(); g.fill();
+  g.fillStyle = "#5d5d68";
+  g.beginPath();
+  g.moveTo(650, 362); g.lineTo(668, 344); g.lineTo(690, 342); g.lineTo(700, 362);
+  g.closePath(); g.fill();
+  g.strokeStyle = "rgba(255,255,255," + (0.35 + 0.3 * Math.sin(t * 1.7)).toFixed(3) + ")";
+  g.lineWidth = 2;
+  g.beginPath(); g.arc(580, 358, 12, Math.PI, Math.PI * 2); g.stroke();
+  g.beginPath(); g.arc(672, 360, 9, Math.PI, Math.PI * 2); g.stroke();
+  // 主车：20–22 秒减速停稳（地面线 385）
+  var doorOpen = smoothstep(22, 22.3, t) * (1 - smoothstep(23.2, 23.5, t));
+  drawCar(g, CAR_X, 385, {
+    wheelAngle: scrollAt(Math.min(t, 22)) / 14,
+    bob: t < 21 ? Math.sin(t * 6) * 1.5 : 0,
+    doorOpen: doorOpen
+  });
+  // 鹈鹕动作链：车内（<22）→ 下车站立（22–23）→ 步行到礁石（23–25.3）
+  // → 爬上礁石（25.3–26）→ 坐下看海（≥26）
+  if (t < 22) {
+    drawPelicanDriver(g, CAR_X - 5, 375, {
+      pose: "drive", flutter: Math.sin(t * 5) * (0.2 + 0.1 * (speedProfile(t) / 100))
+    });
+  } else if (t < 23) {
+    drawPelicanDriver(g, CAR_X + 55, 380, { pose: "stand", flutter: 0.1 });
+  } else if (t < 25.3) {
+    var wk = smoothstep(23, 25.3, t);
+    drawPelicanDriver(g, lerp(CAR_X + 55, 570, wk), 372, {
+      pose: "walk", walkPhase: (t - 23) * 7, flutter: Math.sin(t * 5) * 0.15
+    });
+  } else if (t < 26) {
+    var ck = smoothstep(25.3, 26, t);
+    drawPelicanDriver(g, lerp(570, 595, ck), lerp(372, 340, ck), {
+      pose: "walk", walkPhase: (t - 23) * 7, flutter: 0.1
+    });
+  } else {
+    drawPelicanDriver(g, 595, 340, { pose: "sit", droop: true });
+  }
+  // 片尾字幕（28–30 秒淡入）
+  var ca = smoothstep(28, 29.5, t);
+  if (ca > 0) {
+    g.fillStyle = "rgba(0,0,0," + (0.55 * ca).toFixed(3) + ")";
+    g.fillRect(0, 0, W, H);
+    g.fillStyle = "rgba(255,255,255," + ca.toFixed(3) + ")";
+    g.textAlign = "center";
+    g.font = "bold 30px sans-serif";
+    g.fillText("鹈鹕开车 · Pelican Drive", W / 2, 200);
+    g.font = "16px sans-serif";
+    g.fillText("30 秒动画 · MI #79", W / 2, 232);
+  }
+}
+
+/* ---------- 合成：交叉淡化 + 转弯推近 + 循环接缝淡黑 ---------- */
+var bufA = document.createElement("canvas"); bufA.width = W; bufA.height = H;
+var bufB = document.createElement("canvas"); bufB.width = W; bufB.height = H;
+var bufActx = bufA.getContext("2d"), bufBctx = bufB.getContext("2d");
+function renderShot(buf, bctx, shot, t) {
+  bctx.clearRect(0, 0, W, H);
+  if (shot === 1) renderShot1(bctx, t);
+  else if (shot === 2) renderShot2(bctx, t);
+  else renderShot3(bctx, t);
+}
+function drawFrame(t) {
+  var a = shotAt(t), b = null, mix = 0;
+  if (t >= 9.5 && t < 10) { a = 1; b = 2; mix = (t - 9.5) / FADE; }
+  else if (t >= 19.5 && t < 20) { a = 2; b = 3; mix = (t - 19.5) / FADE; }
+  renderShot(bufA, bufActx, a, t);
+  ctx.save();
+  ctx.clearRect(0, 0, W, H);
+  var z = zoomAt(t);
+  if (z !== 1) { ctx.translate(CAR_X, 300); ctx.scale(z, z); ctx.translate(-CAR_X, -300); }
+  ctx.drawImage(bufA, 0, 0);
+  if (b !== null) {
+    renderShot(bufB, bufBctx, b, t);
+    ctx.globalAlpha = mix;
+    ctx.drawImage(bufB, 0, 0);
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+  var black = 0;
+  if (t >= DUR - LOOP_FADE) black = (t - (DUR - LOOP_FADE)) / LOOP_FADE;
+  else if (t < LOOP_FADE) black = 1 - t / LOOP_FADE;
+  if (black > 0) {
+    ctx.fillStyle = "rgba(0,0,0," + black.toFixed(3) + ")";
+    ctx.fillRect(0, 0, W, H);
+  }
+  if (!started) {
+    ctx.fillStyle = "rgba(28,61,77,0.6)";
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#fff"; ctx.textAlign = "center";
+    ctx.font = "bold 30px sans-serif";
+    ctx.fillText("鹈鹕开车", W / 2, 180);
+    ctx.font = "18px sans-serif";
+    ctx.fillText("点击播放，30 秒动画开始", W / 2, 220);
+  }
+}
+
+/* ---------- 声音：三段 WebAudio 程序化生成（带静音开关） ---------- */
+var AC = null, master = null;
+var engOsc = null, engGain = null, cityGain = null, waveGain = null, musicGain = null;
+var muted = false;
+try { muted = localStorage.getItem(MUTE_KEY) === "1"; } catch (e) { muted = false; }
+var nextChirp = 0, nextWhoosh = 0, nextNote = 0, noteIdx = 0, lastBeepT = -1;
+var PENTA = [523.25, 587.33, 659.25, 783.99, 880.0, 1046.5];
+
+function makeNoiseBuffer(ac) {
+  var len = ac.sampleRate * 2, buf = ac.createBuffer(1, len, ac.sampleRate), d = buf.getChannelData(0), i;
+  for (i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  return buf;
+}
+function ensureAudio() {
+  if (AC) return true;
+  try {
+    var Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return false;
+    AC = new Ctx();
+    master = AC.createGain(); master.gain.value = muted ? 0 : 0.9; master.connect(AC.destination);
+    var noise = makeNoiseBuffer(AC);
+    // 引擎：锯齿波 + 低通 + 怠速抖动 LFO
+    engOsc = AC.createOscillator(); engOsc.type = "sawtooth"; engOsc.frequency.value = 70;
+    var engFilter = AC.createBiquadFilter(); engFilter.type = "lowpass"; engFilter.frequency.value = 500;
+    engGain = AC.createGain(); engGain.gain.value = 0;
+    engOsc.connect(engFilter); engFilter.connect(engGain); engGain.connect(master);
+    var lfo = AC.createOscillator(); lfo.frequency.value = 6.5;
+    var lfoG = AC.createGain(); lfoG.gain.value = 0.008;
+    lfo.connect(lfoG); lfoG.connect(engGain.gain);
+    engOsc.start(); lfo.start();
+    // 城市环境音：带通滤波噪声
+    var citySrc = AC.createBufferSource(); citySrc.buffer = noise; citySrc.loop = true;
+    var cityFilter = AC.createBiquadFilter(); cityFilter.type = "bandpass"; cityFilter.frequency.value = 900; cityFilter.Q.value = 0.7;
+    cityGain = AC.createGain(); cityGain.gain.value = 0;
+    citySrc.connect(cityFilter); cityFilter.connect(cityGain); cityGain.connect(master);
+    citySrc.start();
+    // 海浪：低通滤波噪声 + 6 秒潮汐 LFO
+    var waveSrc = AC.createBufferSource(); waveSrc.buffer = noise; waveSrc.loop = true;
+    var waveFilter = AC.createBiquadFilter(); waveFilter.type = "lowpass"; waveFilter.frequency.value = 420;
+    waveGain = AC.createGain(); waveGain.gain.value = 0;
+    waveSrc.connect(waveFilter); waveFilter.connect(waveGain); waveGain.connect(master);
+    var wlfo = AC.createOscillator(); wlfo.frequency.value = 1 / 6;
+    var wlfoG = AC.createGain(); wlfoG.gain.value = 0.025;
+    wlfo.connect(wlfoG); wlfoG.connect(waveGain.gain);
+    waveSrc.start(); wlfo.start();
+    // 轻音乐总线（琶音经延迟产生混响感）
+    musicGain = AC.createGain(); musicGain.gain.value = 0;
+    var delay = AC.createDelay(1); delay.delayTime.value = 0.28;
+    var fb = AC.createGain(); fb.gain.value = 0.3;
+    var wet = AC.createGain(); wet.gain.value = 0.25;
+    musicGain.connect(master); musicGain.connect(delay);
+    delay.connect(fb); fb.connect(delay); delay.connect(wet); wet.connect(master);
+    return true;
+  } catch (e) { AC = null; return false; }
+}
+function chirp() {  // 鸟鸣：2–3 声短促正弦滑音
+  if (!AC) return;
+  var n = 2 + Math.floor(Math.random() * 2), i;
+  for (i = 0; i < n; i++) {
+    var o = AC.createOscillator(), g = AC.createGain(), t0 = AC.currentTime + i * 0.16;
+    o.type = "sine";
+    o.frequency.setValueAtTime(2500, t0);
+    o.frequency.exponentialRampToValueAtTime(3800, t0 + 0.06);
+    o.frequency.exponentialRampToValueAtTime(2600, t0 + 0.12);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(0.03, t0 + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.13);
+    o.connect(g); g.connect(master);
+    o.start(t0); o.stop(t0 + 0.15);
+  }
+}
+function beepTwice() {  // 绿灯提示音：880 Hz 两声
+  if (!AC) return;
+  var i;
+  for (i = 0; i < 2; i++) {
+    var o = AC.createOscillator(), g = AC.createGain(), t0 = AC.currentTime + i * 0.25;
+    o.type = "sine"; o.frequency.value = 880;
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(0.05, t0 + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.15);
+    o.connect(g); g.connect(master);
+    o.start(t0); o.stop(t0 + 0.16);
+  }
+}
+function playNote(freq) {
+  if (!AC) return;
+  var o = AC.createOscillator(), g = AC.createGain(), t0 = AC.currentTime;
+  o.type = "sine"; o.frequency.value = freq;
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(0.08, t0 + 0.03);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5);
+  o.connect(g); g.connect(musicGain);
+  o.start(t0); o.stop(t0 + 0.55);
+}
+function setGain(node, v) {
+  if (node) node.gain.setTargetAtTime(v, AC.currentTime, 0.12);
+}
+function updateAudio(t, dt) {
+  if (!AC) return;
+  var sh = shotAt(t);
+  // 引擎：镜头 1/2 随车速；镜头 3 随停车淡出
+  var engV = 0, engF = 70;
+  if (sh === 1) { engV = 0.05; engF = 65 + speedProfile(t) * 0.15; }
+  else if (sh === 2) { engV = 0.055; engF = 80 + speedProfile(t) * 0.1; }
+  else if (t < 21) { engV = 0.04 * (1 - smoothstep(20, 21, t)); engF = 65; }
+  setGain(engGain, engV);
+  if (engOsc) engOsc.frequency.setTargetAtTime(engF, AC.currentTime, 0.1);
+  setGain(cityGain, sh === 2 ? 0.035 : 0);
+  setGain(waveGain, sh === 3 ? 0.05 : 0);
+  setGain(musicGain, sh === 3 && t >= 26 ? 0.06 : 0);
+  // 鸟鸣（镜头 1，随机 2–4 秒）
+  if (sh === 1 && t > nextChirp) { chirp(); nextChirp = t + 2 + Math.random() * 2; }
+  // 绿灯提示音（t 跨过 12.5 时一次）
+  if (t >= 12.5 && lastBeepT < 12.5) beepTwice();
+  lastBeepT = t;
+  // 轻音乐琶音（镜头 3，26 秒起，每 0.5 秒一音）
+  if (sh === 3 && t >= 26 && t > nextNote) {
+    playNote(PENTA[noteIdx % PENTA.length]);
+    noteIdx++; nextNote = t + 0.5;
+  }
+}
+
+/* ---------- 主循环：绝对时间轴 ---------- */
+var clockEl = document.getElementById("clock");
+var shotEl = document.getElementById("shot");
+var sndEl = document.getElementById("snd");
+var barFill = document.getElementById("barFill");
+var playBtn = document.getElementById("playBtn");
+var muteBtn = document.getElementById("muteBtn");
+
+var playing = false, started = false;
+var elapsed = 0, playStart = 0, lastT = -1;
+function nowT() {
+  if (!playing) return elapsed % DUR;
+  return (elapsed + (performance.now() - playStart) / 1000) % DUR;
+}
+function setMute(m) {
+  muted = m;
+  if (master) master.gain.value = muted ? 0 : 0.9;
+  muteBtn.textContent = muted ? "取消静音 (M)" : "静音 (M)";
+  sndEl.textContent = muted ? "声音：静音" : "声音：开";
+  try { localStorage.setItem(MUTE_KEY, muted ? "1" : "0"); } catch (e) { /* 忽略 */ }
+}
+function play() {
+  ensureAudio();
+  if (AC && AC.state === "suspended") AC.resume();
+  if (!playing) { playing = true; started = true; playStart = performance.now(); }
+  playBtn.textContent = "暂停";
+}
+function pause() {
+  if (playing) { elapsed = (elapsed + (performance.now() - playStart) / 1000) % DUR; playing = false; }
+  playBtn.textContent = "播放";
+}
+function replay() {
+  elapsed = 0; playStart = performance.now(); playing = true; started = true;
+  nextChirp = 0; nextNote = 0; noteIdx = 0; lastBeepT = -1;
+  ensureAudio();
+  if (AC && AC.state === "suspended") AC.resume();
+  playBtn.textContent = "暂停";
+}
+function togglePlay() { if (playing) pause(); else play(); }
+
+var lastTs = null;
+function loop(ts) {
+  if (lastTs === null) lastTs = ts;
+  var dt = Math.min((ts - lastTs) / 1000, 0.05);
+  lastTs = ts;
+  var t = nowT();
+  if (t < lastT) { nextChirp = 0; nextNote = 0; lastBeepT = -1; }  // 循环 wrap：重置触发器
+  drawFrame(t);
+  if (playing) updateAudio(t, dt);
+  clockEl.textContent = t.toFixed(1) + "s / 30s";
+  shotEl.textContent = shotName(shotAt(t));
+  barFill.style.width = (t / DUR * 100).toFixed(1) + "%";
+  lastT = t;
+  requestAnimationFrame(loop);
+}
+setMute(muted);
+requestAnimationFrame(loop);
+
+// 输入：按钮 + 键盘（空格播放/暂停，R 重播，M 静音）
+playBtn.addEventListener("click", togglePlay);
+document.getElementById("replayBtn").addEventListener("click", replay);
+muteBtn.addEventListener("click", function () { setMute(!muted); });
+canvas.addEventListener("pointerdown", togglePlay);
+window.addEventListener("keydown", function (e) {
+  if (e.code === "Space") { e.preventDefault(); togglePlay(); }
+  else if (e.code === "KeyR") { replay(); }
+  else if (e.code === "KeyM") { setMute(!muted); }
+});
+</script>
+</body>
+</html>
